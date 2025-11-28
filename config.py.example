@@ -1,0 +1,14 @@
+# E-posta Yapılandırması
+# Bu dosyayı kopyalayıp 'config.py' olarak kaydedin ve bilgilerinizi girin
+
+# SMTP Sunucu Bilgileri
+SMTP_SERVER = "smtp.gmail.com"  # Gmail için: smtp.gmail.com
+SMTP_PORT = 587  # Gmail için: 587 (TLS) veya 465 (SSL)
+SMTP_USERNAME = "your-email@gmail.com"  # E-posta adresiniz
+SMTP_PASSWORD = "your-app-password"  # Gmail için uygulama şifresi gerekli
+SMTP_USE_TLS = True  # Port 587 için True, Port 465 için False (SSL kullanılır)
+
+# E-posta Bilgileri
+EMAIL_FROM = "your-email@gmail.com"  # Gönderen e-posta (genelde SMTP_USERNAME ile aynı)
+EMAIL_TO = "recipient@example.com"  # Alıcı e-posta (birden fazla için: "email1@example.com,email2@example.com")
+
