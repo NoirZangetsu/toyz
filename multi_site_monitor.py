@@ -154,8 +154,8 @@ class MultiSiteMonitor:
                 print(f"  ℹ️  Piccolo: İlk çalıştırma - mevcut ürünler kaydedildi")
                 self.previous_products[site_id] = current_product_ids
 
-                # İlk çalıştırmada mevcut ürünleri bildir
-                if TELEGRAM_ENABLED and products:
+                # İlk çalıştırmada mevcut durumu bildir
+                if TELEGRAM_ENABLED:
                     self.send_initial_stock_summary(site_id, "Piccolo Hot Wheels Premium", products, in_stock_products, HOT_WHEELS_URL)
             else:
                 # Yeni ürünleri bul
@@ -219,38 +219,44 @@ class MultiSiteMonitor:
         İlk çalıştırmada mevcut stok özetini gönderir.
         """
         try:
-            # İlk ürünleri göster (maksimum 10)
+            # Başlangıç mesajı
             lines = [
                 f"📊 <b>{site_name}</b> izleme başladı!",
                 "",
                 f"📦 Toplam ürün: {len(products)}",
                 f"✅ Stokta olan: {len(in_stock_products)}",
-                "",
-                "📋 <b>Mevcut Stok:</b>",
                 ""
             ]
 
-            for i, product in enumerate(in_stock_products[:10], 1):
-                name = product.get('name', 'İsimsiz Ürün')
-                if len(name) > 50:
-                    name = name[:47] + "..."
-
-                code = product.get('code', '')
-                price = product.get('price', 'Fiyat yok')
-                quantity = product.get('quantity', 0)
-
-                lines.append(f"{i}. <b>{name}</b>")
-                if code:
-                    lines.append(f"   🏷️ {code}")
-                lines.append(f"   💰 {price}")
-                if quantity > 0:
-                    lines.append(f"   📦 {quantity} adet")
+            if in_stock_products:
+                lines.append("📋 <b>Mevcut Stok:</b>")
                 lines.append("")
 
-            if len(in_stock_products) > 10:
-                lines.append(f"... ve {len(in_stock_products) - 10} ürün daha")
-            else:
+                for i, product in enumerate(in_stock_products[:10], 1):
+                    name = product.get('name', 'İsimsiz Ürün')
+                    if len(name) > 50:
+                        name = name[:47] + "..."
+
+                    code = product.get('code', '')
+                    price = product.get('price', 'Fiyat yok')
+                    quantity = product.get('quantity', 0)
+
+                    lines.append(f"{i}. <b>{name}</b>")
+                    if code:
+                        lines.append(f"   🏷️ {code}")
+                    lines.append(f"   💰 {price}")
+                    if quantity > 0:
+                        lines.append(f"   📦 {quantity} adet")
+                    lines.append("")
+
+                if len(in_stock_products) > 10:
+                    lines.append(f"... ve {len(in_stock_products) - 10} ürün daha")
+
                 lines.append("🎯 Sistem hazır! Yeni ürünler eklendiğinde bildirim alacaksınız.")
+            else:
+                lines.append("⚠️ Şu anda stokta ürün bulunmuyor.")
+                lines.append("🔄 Sistem çalışmaya devam ediyor...")
+                lines.append("🎯 Yeni ürünler eklendiğinde otomatik bildirim alacaksınız.")
 
             lines.append("")
             lines.append(f"🔗 <a href='{site_url}'>Mağazaya Git</a>")
@@ -310,8 +316,8 @@ class MultiSiteMonitor:
                 print(f"    ℹ️  İlk çalıştırma - mevcut ürünler kaydedildi")
                 self.previous_products[site_id] = current_product_ids
 
-                # İlk çalıştırmada mevcut ürünleri bildir
-                if TELEGRAM_ENABLED and products:
+                # İlk çalıştırmada mevcut durumu bildir
+                if TELEGRAM_ENABLED:
                     self.send_initial_stock_summary(site_id, site_name, products, in_stock_products, site_url)
                 else:
                     # Yeni ürünleri bul
@@ -391,8 +397,8 @@ class MultiSiteMonitor:
                 print(f"  ℹ️  ToyzzShop: İlk çalıştırma - mevcut ürünler kaydedildi")
                 self.previous_products[site_id] = current_product_ids
 
-                # İlk çalıştırmada mevcut ürünleri bildir
-                if TELEGRAM_ENABLED and products:
+                # İlk çalıştırmada mevcut durumu bildir
+                if TELEGRAM_ENABLED:
                     self.send_initial_stock_summary(site_id, "ToyzzShop Hot Wheels", products, in_stock_products, "https://www.toyzzshop.com/oyuncak-araba?q=brands/3657/exclusive/true/order/ovd")
             else:
                 # Yeni ürünleri bul
