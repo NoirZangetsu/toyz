@@ -9,11 +9,14 @@ import json
 import time
 import ssl
 import smtplib
+import re
+import asyncio
 from datetime import datetime
 from email.message import EmailMessage
 from typing import Dict, Any, Optional, List, Tuple, Set
 
 import requests
+from playwright.async_api import async_playwright
 
 # API endpoint ve parametreleri
 API_URL = "https://www.piccolo.com.tr/api/Product/GetProductCategoryHierarchy"
@@ -24,6 +27,9 @@ API_PARAMS = {
 
 # İzlenecek kategori sayfası
 HOT_WHEELS_URL = "https://www.piccolo.com.tr/hot-wheels-premium"
+
+# Piccolo scraping için database dosyası
+PICCOLO_DB_FILE = "piccolo_stock_db.json"
 
 # Telegram ve E-posta yapılandırması (config.py dosyasından veya ortam değişkenlerinden okunur)
 try:
@@ -65,6 +71,203 @@ except ImportError:
 TELEGRAM_ENABLED = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 EMAIL_RECIPIENTS = [addr.strip() for addr in EMAIL_TO.split(",") if addr.strip()]
 EMAIL_ENABLED = all([SMTP_SERVER, SMTP_USERNAME, SMTP_PASSWORD, EMAIL_FROM, EMAIL_RECIPIENTS])
+
+
+class PiccoloMonitor:
+    """
+    Piccolo sitesi için ürün stok monitor sınıfı.
+    """
+
+    def __init__(self):
+        self.seen_products = self.load_db()
+
+    def load_db(self) -> Dict:
+        """Veritabanını yükler."""
+        if os.path.exists(PICCOLO_DB_FILE):
+            try:
+                with open(PICCOLO_DB_FILE, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except json.JSONDecodeError:
+                print("⚠️  Piccolo veritabanı bozuk, yeniden oluşturulacak.")
+                return {}
+        return {}
+
+    def save_db(self):
+        """Veritabanını kaydeder."""
+        with open(PICCOLO_DB_FILE, "w", encoding="utf-8") as f:
+            json.dump(self.seen_products, f, ensure_ascii=False, indent=4)
+
+    async def scrape_piccolo_products(self) -> Tuple[List[Dict], Optional[str]]:
+        """
+        Piccolo Hot Wheels Premium sayfasından ürünleri çeker.
+
+        Returns:
+            (ürün listesi, hata mesajı) tuple'ı
+        """
+        products = []
+
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                context = await browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
+                page = await context.new_page()
+
+                await page.goto(HOT_WHEELS_URL, wait_until="domcontentloaded", timeout=60000)
+                await page.wait_for_timeout(5000)
+
+                # Sayfa yüklenmesini tetikle
+                for i in range(3):
+                    await page.evaluate(f"window.scrollTo(0, {i * 1000})")
+                    await page.wait_for_timeout(1000)
+
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await page.wait_for_timeout(3000)
+
+                # Ürün kartlarını bul - farklı seçiciler dene
+                selectors_to_try = [
+                    ".product-item",
+                    ".product-card",
+                    ".product-box",
+                    ".item",
+                    "[data-product-id]",
+                    ".product"
+                ]
+
+                product_elements = []
+
+                for selector in selectors_to_try:
+                    product_elements = await page.query_selector_all(selector)
+                    if len(product_elements) > 0:
+                        print(f"  ✅ Piccolo seçici bulundu: {selector} ({len(product_elements)} ürün)")
+                        break
+
+                if len(product_elements) == 0:
+                    # Alternatif yöntem - ürün linklerini ara
+                    product_links = await page.query_selector_all('a[href*="/hot-wheels-premium"]')
+                    print(f"  ℹ️  Ürün linkleri bulundu: {len(product_links)}")
+                    product_elements = product_links
+
+                for i, item in enumerate(product_elements[:50]):  # İlk 50 ürünü işle
+                    try:
+                        # Ürün linkini al
+                        href = await item.get_attribute("href")
+                        if not href:
+                            continue
+
+                        # Tam URL oluştur
+                        if href.startswith('/'):
+                            product_url = f"https://www.piccolo.com.tr{href}"
+                        elif href.startswith('http'):
+                            product_url = href
+                        else:
+                            continue
+
+                        # Ürün ID'sini URL'den çıkar
+                        product_id_match = re.search(r'/(\d+)/', product_url)
+                        if product_id_match:
+                            product_id = product_id_match.group(1)
+                        else:
+                            product_id = f"piccolo_{i}"
+
+                        # Ürün bilgilerini çıkar
+                        container_text = await item.inner_text()
+                        lines = [line.strip() for line in container_text.split('\n') if line.strip()]
+
+                        # Ürün adını çıkar
+                        name = "İsimsiz Ürün"
+                        for line in lines:
+                            if len(line) > 10 and not any(char.isdigit() for char in line[:20]):
+                                name = line
+                                break
+
+                        # Fiyatı çıkar
+                        price = "0 TL"
+                        for line in lines:
+                            if ("TL" in line or "₺" in line) and any(c.isdigit() for c in line):
+                                price = line
+                                break
+
+                        # Stok durumunu kontrol et - çeşitli yöntemler
+                        is_in_stock = False
+                        stock_quantity = 0
+
+                        # Yöntem 1: "Sepete Ekle" butonu
+                        add_to_cart = await item.query_selector('button, input[type="submit"], a')
+                        if add_to_cart:
+                            button_text = await add_to_cart.inner_text()
+                            if "Sepete Ekle" in button_text or "Satın Al" in button_text:
+                                is_in_stock = True
+                                stock_quantity = 1  # Piccolo'da adet bilgisi göstermiyor
+
+                        # Yöntem 2: Stok bilgisi ara
+                        if "stok" in container_text.lower() or "tükendi" in container_text.lower():
+                            if "tükendi" in container_text.lower() or "stokta yok" in container_text.lower():
+                                is_in_stock = False
+                            else:
+                                is_in_stock = True
+
+                        # Yöntem 3: Varsayılan olarak stokta kabul et
+                        if not any(keyword in container_text.lower() for keyword in ["tükendi", "stokta yok", "haber ver"]):
+                            is_in_stock = True
+
+                        # Kod bilgisi çıkar (varsa)
+                        code = ""
+                        for line in lines:
+                            if len(line) <= 10 and any(c.isdigit() for c in line) and any(c.isalpha() for c in line):
+                                code = line
+                                break
+
+                        product = {
+                            "id": product_id,
+                            "name": name.strip(),
+                            "code": code.strip(),
+                            "price": price.strip(),
+                            "url": product_url,
+                            "in_stock": is_in_stock,
+                            "quantity": stock_quantity
+                        }
+
+                        products.append(product)
+
+                    except Exception as e:
+                        continue
+
+                await browser.close()
+
+        except Exception as e:
+            return [], f"Piccolo scraping hatası: {str(e)}"
+
+        return products, None
+
+
+def scrape_piccolo_sync(monitor: PiccoloMonitor) -> Tuple[List[Dict], Optional[str]]:
+    """
+    Senkron wrapper fonksiyon - asyncio event loop ile çalıştırır.
+    """
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, monitor.scrape_piccolo_products())
+                return future.result()
+        else:
+            return loop.run_until_complete(monitor.scrape_piccolo_products())
+    except RuntimeError:
+        return asyncio.run(monitor.scrape_piccolo_products())
+
+
+# Global monitor instance
+_piccolo_monitor = None
+
+def get_piccolo_monitor():
+    """Global Piccolo monitor instance'ını döndürür."""
+    global _piccolo_monitor
+    if _piccolo_monitor is None:
+        _piccolo_monitor = PiccoloMonitor()
+    return _piccolo_monitor
 
 # Kontrol aralığı (saniye cinsinden)
 CHECK_INTERVAL = 30  # Varsayılan 30 saniye
