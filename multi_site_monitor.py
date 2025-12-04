@@ -15,6 +15,7 @@ from typing import Dict, Set, List, Tuple, Optional
 from api_monitor import (
     get_piccolo_monitor,
     scrape_piccolo_sync,
+    setup_piccolo_driver,
     HOT_WHEELS_URL
 )
 
@@ -85,7 +86,8 @@ class MultiSiteMonitor:
         self.interval = interval
         self.running = False
         self.previous_products: Dict[str, Set] = self.load_previous_products()
-        self.driver = None
+        self.driver = None  # DiecastTurkey için
+        self.piccolo_driver = None  # Piccolo için
 
     def load_previous_products(self) -> Dict[str, Set]:
         """Önceki ürünleri yükler."""
@@ -137,8 +139,22 @@ class MultiSiteMonitor:
         site_id = "piccolo_hw_premium"
 
         try:
+            # Piccolo için driver kontrolü - yoksa veya kapandıysa yeniden oluştur
+            if not self.piccolo_driver:
+                print("  🌐 Piccolo Chrome WebDriver başlatılıyor...")
+                self.piccolo_driver = setup_piccolo_driver(headless=True)  # Headless mod - arka planda çalışır
+                time.sleep(2)  # Driver'ın hazır olmasını bekle
+            else:
+                # Driver'ın hala açık olduğunu kontrol et
+                try:
+                    self.piccolo_driver.current_url
+                except:
+                    print("  🔄 Piccolo Chrome WebDriver yeniden başlatılıyor...")
+                    self.piccolo_driver = setup_piccolo_driver(headless=True)
+                    time.sleep(2)
+
             monitor = get_piccolo_monitor()
-            products, error = scrape_piccolo_sync(monitor)
+            products, error = scrape_piccolo_sync(monitor, self.piccolo_driver)
 
             if error:
                 print(f"  ❌ Piccolo: {error}")
@@ -310,23 +326,23 @@ class MultiSiteMonitor:
                 print(f"    ✅ {len(products)} ürün bulundu ({len(in_stock_products)} stokta)")
                 
                 current_product_ids = {p["id"] for p in products if p.get("id")}
-                
-            # İlk çalıştırma kontrolü
-            if site_id not in self.previous_products:
-                print(f"    ℹ️  İlk çalıştırma - mevcut ürünler kaydedildi")
-                self.previous_products[site_id] = current_product_ids
 
-                # İlk çalıştırmada mevcut durumu bildir
-                if TELEGRAM_ENABLED:
-                    self.send_initial_stock_summary(site_id, site_name, products, in_stock_products, site_url)
+                # İlk çalıştırma kontrolü
+                if site_id not in self.previous_products:
+                    print(f"    ℹ️  İlk çalıştırma - mevcut ürünler kaydedildi")
+                    self.previous_products[site_id] = current_product_ids
+
+                    # İlk çalıştırmada mevcut durumu bildir
+                    if TELEGRAM_ENABLED:
+                        self.send_initial_stock_summary(site_id, site_name, products, in_stock_products, site_url)
                 else:
                     # Yeni ürünleri bul
                     new_product_ids = current_product_ids - self.previous_products[site_id]
-                    
+
                     if new_product_ids:
                         new_products = [p for p in products if p.get("id") in new_product_ids]
                         print(f"    🚨 {len(new_products)} yeni ürün!")
-                        
+
                         # Bildirim mesajı
                         lines = [
                             "🚨 <b>YENİ ÜRÜN BULUNDU!</b>",
@@ -335,37 +351,37 @@ class MultiSiteMonitor:
                             f"✨ <b>Yeni ürün sayısı:</b> {len(new_products)}",
                             "",
                         ]
-                        
+
                         for idx, product in enumerate(new_products[:5], 1):  # İlk 5 ürün
                             lines.append(f"{idx}. <b>{product['name']}</b>")
-                            
+
                             if product.get('code'):
                                 lines.append(f"   🏷️ {product['code']}")
-                            
+
                             if product.get('price'):
                                 lines.append(f"   💰 {product['price']}")
-                            
+
                             if product.get('in_stock'):
                                 lines.append(f"   ✅ Stokta ({product.get('quantity', 0)} adet)")
                             else:
                                 lines.append(f"   ⚠️ Stokta yok")
-                            
+
                             if product.get('url'):
                                 lines.append(f"   🔗 <a href='{product['url']}'>Ürüne Git</a>")
-                            
+
                             lines.append("")
-                        
+
                         if len(new_products) > 5:
                             lines.append(f"... ve {len(new_products) - 5} ürün daha")
-                        
+
                         if TELEGRAM_ENABLED:
                             send_telegram_message("\n".join(lines))
-                        
+
                         self.previous_products[site_id] = current_product_ids
                     else:
                         print(f"    ℹ️  Yeni ürün yok")
 
-            self.save_previous_products()
+                self.save_previous_products()
 
         except Exception as e:
             print(f"  ❌ DiecastTurkey hata: {str(e)[:100]}")
@@ -517,7 +533,10 @@ class MultiSiteMonitor:
         finally:
             if self.driver:
                 self.driver.quit()
-                print("✅ Chrome WebDriver kapatıldı.")
+                print("✅ DiecastTurkey Chrome WebDriver kapatıldı.")
+            if self.piccolo_driver:
+                self.piccolo_driver.quit()
+                print("✅ Piccolo Chrome WebDriver kapatıldı.")
 
 
 if __name__ == "__main__":

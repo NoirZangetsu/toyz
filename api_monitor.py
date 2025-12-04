@@ -10,13 +10,19 @@ import time
 import ssl
 import smtplib
 import re
-import asyncio
 from datetime import datetime
 from email.message import EmailMessage
 from typing import Dict, Any, Optional, List, Tuple, Set
 
 import requests
-from playwright.async_api import async_playwright
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, JavascriptException
+from webdriver_manager.chrome import ChromeDriverManager
 
 # API endpoint ve parametreleri
 API_URL = "https://www.piccolo.com.tr/api/Product/GetProductCategoryHierarchy"
@@ -73,6 +79,31 @@ EMAIL_RECIPIENTS = [addr.strip() for addr in EMAIL_TO.split(",") if addr.strip()
 EMAIL_ENABLED = all([SMTP_SERVER, SMTP_USERNAME, SMTP_PASSWORD, EMAIL_FROM, EMAIL_RECIPIENTS])
 
 
+def setup_piccolo_driver(headless: bool = True) -> webdriver.Chrome:
+    """
+    Piccolo için Chrome WebDriver'ı yapılandırır.
+    """
+    chrome_options = Options()
+
+    if headless:
+        chrome_options.add_argument("--headless=new")
+
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+    chrome_options.add_experimental_option('prefs', {
+        'profile.default_content_setting_values.notifications': 2
+    })
+
+    # WebDriver Manager ile ChromeDriver'ı otomatik olarak yönet
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=chrome_options)
+    return driver
+
+
 class PiccoloMonitor:
     """
     Piccolo sitesi için ürün stok monitor sınıfı.
@@ -97,9 +128,12 @@ class PiccoloMonitor:
         with open(PICCOLO_DB_FILE, "w", encoding="utf-8") as f:
             json.dump(self.seen_products, f, ensure_ascii=False, indent=4)
 
-    async def scrape_piccolo_products(self) -> Tuple[List[Dict], Optional[str]]:
+    def scrape_piccolo_products(self, driver: webdriver.Chrome) -> Tuple[List[Dict], Optional[str]]:
         """
         Piccolo Hot Wheels Premium sayfasından ürünleri çeker.
+
+        Args:
+            driver: Selenium WebDriver instance
 
         Returns:
             (ürün listesi, hata mesajı) tuple'ı
@@ -107,134 +141,162 @@ class PiccoloMonitor:
         products = []
 
         try:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                context = await browser.new_context(
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            print(f"  🌐 Piccolo sayfası yükleniyor: {HOT_WHEELS_URL}")
+            driver.get(HOT_WHEELS_URL)
+
+            # Sayfanın yüklenmesini bekle
+            time.sleep(5)
+
+            # Cookie banner'ı kapat (varsa)
+            try:
+                cookie_accept = WebDriverWait(driver, 3).until(
+                    EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Kabul') or contains(text(), 'Accept') or contains(@class, 'cookie')]"))
                 )
-                page = await context.new_page()
+                cookie_accept.click()
+                time.sleep(1)
+            except (TimeoutException, NoSuchElementException):
+                pass
 
-                await page.goto(HOT_WHEELS_URL, wait_until="domcontentloaded", timeout=60000)
-                await page.wait_for_timeout(5000)
+            # Sayfa yüklenmesini tetikle - scroll yap
+            for i in range(3):
+                driver.execute_script(f"window.scrollTo(0, {i * 1000})")
+                time.sleep(1)
 
-                # Sayfa yüklenmesini tetikle
-                for i in range(3):
-                    await page.evaluate(f"window.scrollTo(0, {i * 1000})")
-                    await page.wait_for_timeout(1000)
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
+            time.sleep(3)
 
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                await page.wait_for_timeout(3000)
+            # Ürün kartlarını bul - farklı seçiciler dene
+            selectors_to_try = [
+                ".product-item",
+                ".product-card",
+                ".product-box",
+                ".item",
+                "[data-product-id]",
+                ".product",
+                ".product-container",
+                ".card",
+                ".grid-item"
+            ]
 
-                # Ürün kartlarını bul - farklı seçiciler dene
-                selectors_to_try = [
-                    ".product-item",
-                    ".product-card",
-                    ".product-box",
-                    ".item",
-                    "[data-product-id]",
-                    ".product"
-                ]
+            product_elements = []
 
-                product_elements = []
-
-                for selector in selectors_to_try:
-                    product_elements = await page.query_selector_all(selector)
+            for selector in selectors_to_try:
+                try:
+                    product_elements = driver.find_elements(By.CSS_SELECTOR, selector)
                     if len(product_elements) > 0:
                         print(f"  ✅ Piccolo seçici bulundu: {selector} ({len(product_elements)} ürün)")
                         break
+                except Exception:
+                    continue
 
-                if len(product_elements) == 0:
-                    # Alternatif yöntem - ürün linklerini ara
-                    product_links = await page.query_selector_all('a[href*="/hot-wheels-premium"]')
-                    print(f"  ℹ️  Ürün linkleri bulundu: {len(product_links)}")
-                    product_elements = product_links
+            if len(product_elements) == 0:
+                # Alternatif yöntem - ürün linklerini ara
+                try:
+                    product_elements = driver.find_elements(By.CSS_SELECTOR, 'a[href*="/hot-wheels-premium"]')
+                    print(f"  ℹ️  Ürün linkleri bulundu: {len(product_elements)}")
+                except Exception:
+                    return [], "Hiçbir ürün elementi bulunamadı"
 
-                for i, item in enumerate(product_elements[:50]):  # İlk 50 ürünü işle
-                    try:
-                        # Ürün linkini al
-                        href = await item.get_attribute("href")
-                        if not href:
+            # İlk 50 ürünü işle
+            for i, item in enumerate(product_elements[:50]):
+                try:
+                    # Ürün linkini al
+                    href = item.get_attribute("href")
+                    if not href:
+                        # Eğer item link değilse, içindeki linki ara
+                        try:
+                            link_element = item.find_element(By.TAG_NAME, "a")
+                            href = link_element.get_attribute("href")
+                        except NoSuchElementException:
                             continue
 
-                        # Tam URL oluştur
-                        if href.startswith('/'):
-                            product_url = f"https://www.piccolo.com.tr{href}"
-                        elif href.startswith('http'):
-                            product_url = href
-                        else:
-                            continue
-
-                        # Ürün ID'sini URL'den çıkar
-                        product_id_match = re.search(r'/(\d+)/', product_url)
-                        if product_id_match:
-                            product_id = product_id_match.group(1)
-                        else:
-                            product_id = f"piccolo_{i}"
-
-                        # Ürün bilgilerini çıkar
-                        container_text = await item.inner_text()
-                        lines = [line.strip() for line in container_text.split('\n') if line.strip()]
-
-                        # Ürün adını çıkar
-                        name = "İsimsiz Ürün"
-                        for line in lines:
-                            if len(line) > 10 and not any(char.isdigit() for char in line[:20]):
-                                name = line
-                                break
-
-                        # Fiyatı çıkar
-                        price = "0 TL"
-                        for line in lines:
-                            if ("TL" in line or "₺" in line) and any(c.isdigit() for c in line):
-                                price = line
-                                break
-
-                        # Stok durumunu kontrol et - çeşitli yöntemler
-                        is_in_stock = False
-                        stock_quantity = 0
-
-                        # Yöntem 1: "Sepete Ekle" butonu
-                        add_to_cart = await item.query_selector('button, input[type="submit"], a')
-                        if add_to_cart:
-                            button_text = await add_to_cart.inner_text()
-                            if "Sepete Ekle" in button_text or "Satın Al" in button_text:
-                                is_in_stock = True
-                                stock_quantity = 1  # Piccolo'da adet bilgisi göstermiyor
-
-                        # Yöntem 2: Stok bilgisi ara
-                        if "stok" in container_text.lower() or "tükendi" in container_text.lower():
-                            if "tükendi" in container_text.lower() or "stokta yok" in container_text.lower():
-                                is_in_stock = False
-                            else:
-                                is_in_stock = True
-
-                        # Yöntem 3: Varsayılan olarak stokta kabul et
-                        if not any(keyword in container_text.lower() for keyword in ["tükendi", "stokta yok", "haber ver"]):
-                            is_in_stock = True
-
-                        # Kod bilgisi çıkar (varsa)
-                        code = ""
-                        for line in lines:
-                            if len(line) <= 10 and any(c.isdigit() for c in line) and any(c.isalpha() for c in line):
-                                code = line
-                                break
-
-                        product = {
-                            "id": product_id,
-                            "name": name.strip(),
-                            "code": code.strip(),
-                            "price": price.strip(),
-                            "url": product_url,
-                            "in_stock": is_in_stock,
-                            "quantity": stock_quantity
-                        }
-
-                        products.append(product)
-
-                    except Exception as e:
+                    if not href:
                         continue
 
-                await browser.close()
+                    # Tam URL oluştur
+                    if href.startswith('/'):
+                        product_url = f"https://www.piccolo.com.tr{href}"
+                    elif href.startswith('http'):
+                        product_url = href
+                    else:
+                        continue
+
+                    # Ürün ID'sini URL'den çıkar
+                    product_id_match = re.search(r'/(\d+)/', product_url)
+                    if product_id_match:
+                        product_id = product_id_match.group(1)
+                    else:
+                        product_id = f"piccolo_{i}"
+
+                    # Ürün bilgilerini çıkar
+                    container_text = item.text
+                    lines = [line.strip() for line in container_text.split('\n') if line.strip()]
+
+                    # Ürün adını çıkar
+                    name = "İsimsiz Ürün"
+                    for line in lines:
+                        if len(line) > 10 and not any(char.isdigit() for char in line[:20]):
+                            name = line
+                            break
+
+                    # Fiyatı çıkar
+                    price = "0 TL"
+                    for line in lines:
+                        if ("TL" in line or "₺" in line) and any(c.isdigit() for c in line):
+                            price = line
+                            break
+
+                    # Stok durumunu kontrol et - çeşitli yöntemler
+                    is_in_stock = False
+                    stock_quantity = 0
+
+                    # Yöntem 1: "Sepete Ekle" butonu ara
+                    try:
+                        add_to_cart_buttons = item.find_elements(By.CSS_SELECTOR, 'button, input[type="submit"], a')
+                        for button in add_to_cart_buttons:
+                            button_text = button.text.lower()
+                            if "sepete ekle" in button_text or "satın al" in button_text or "add to cart" in button_text:
+                                is_in_stock = True
+                                stock_quantity = 1  # Piccolo'da adet bilgisi göstermiyor
+                                break
+                    except NoSuchElementException:
+                        pass
+
+                    # Yöntem 2: Stok bilgisi ara
+                    container_lower = container_text.lower()
+                    if "stok" in container_lower or "tükendi" in container_lower:
+                        if "tükendi" in container_lower or "stokta yok" in container_lower or "out of stock" in container_lower:
+                            is_in_stock = False
+                        else:
+                            is_in_stock = True
+                    # Yöntem 3: Varsayılan olarak stokta kabul et (tükendi belirtilmemişse)
+                    elif not any(keyword in container_lower for keyword in ["tükendi", "stokta yok", "haber ver", "out of stock", "notify me"]):
+                        is_in_stock = True
+
+                    # Kod bilgisi çıkar (varsa)
+                    code = ""
+                    for line in lines:
+                        if len(line) <= 15 and any(c.isdigit() for c in line) and any(c.isalpha() for c in line):
+                            code = line
+                            break
+
+                    product = {
+                        "id": product_id,
+                        "name": name.strip(),
+                        "code": code.strip(),
+                        "price": price.strip(),
+                        "url": product_url,
+                        "in_stock": is_in_stock,
+                        "quantity": stock_quantity
+                    }
+
+                    products.append(product)
+
+                except Exception as e:
+                    print(f"  ⚠️  Ürün parse edilemedi: {str(e)[:50]}")
+                    continue
+
+            print(f"  ✅ {len(products)} ürün işlendi")
 
         except Exception as e:
             return [], f"Piccolo scraping hatası: {str(e)}"
@@ -242,21 +304,18 @@ class PiccoloMonitor:
         return products, None
 
 
-def scrape_piccolo_sync(monitor: PiccoloMonitor) -> Tuple[List[Dict], Optional[str]]:
+def scrape_piccolo_sync(monitor: PiccoloMonitor, driver: webdriver.Chrome) -> Tuple[List[Dict], Optional[str]]:
     """
-    Senkron wrapper fonksiyon - asyncio event loop ile çalıştırır.
+    Senkron wrapper fonksiyon - Selenium driver ile çalıştırır.
+
+    Args:
+        monitor: PiccoloMonitor instance
+        driver: Selenium WebDriver instance
+
+    Returns:
+        (ürün listesi, hata mesajı) tuple'ı
     """
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, monitor.scrape_piccolo_products())
-                return future.result()
-        else:
-            return loop.run_until_complete(monitor.scrape_piccolo_products())
-    except RuntimeError:
-        return asyncio.run(monitor.scrape_piccolo_products())
+    return monitor.scrape_piccolo_products(driver)
 
 
 # Global monitor instance
