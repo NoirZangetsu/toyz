@@ -55,8 +55,25 @@ def setup_piccolo_driver(headless: bool = True) -> webdriver.Chrome:
     """
     chrome_options = Options()
 
+    # Cloud'ta Cloudflare challenge için headless modu kapat
+    # Environment variable ile kontrol edilebilir
+    import os
+    force_headless = os.getenv("FORCE_HEADLESS", "false").lower() == "true"
+    disable_headless_for_cloudflare = os.getenv("DISABLE_HEADLESS_FOR_CLOUDFLARE", "true").lower() == "true"
+    
+    # Cloud'ta Cloudflare sorunu varsa headless'i kapat
+    # (Cloud'ta görsel olmadan çalışır, Xvfb gerekmez)
+    # Headless mod Cloudflare'i tetikleyebilir, bu yüzden Cloud'ta kapatıyoruz
     if headless:
-        chrome_options.add_argument("--headless=new")
+        if force_headless:
+            # Zorla headless kullan
+            chrome_options.add_argument("--headless=new")
+        elif disable_headless_for_cloudflare:
+            # Cloudflare için headless'i kapat (Cloud'ta daha iyi çalışır)
+            print("  ℹ️  Cloudflare bypass için headless mod kapatıldı")
+            # Headless argümanı ekleme
+        else:
+            chrome_options.add_argument("--headless=new")
 
     # Google Cloud için gerekli ayarlar
     chrome_options.add_argument("--no-sandbox")
@@ -167,74 +184,119 @@ class PiccoloMonitor:
             except TimeoutException:
                 print("  ⚠️  Document ready state timeout, devam ediliyor...")
             
-            # Cloudflare challenge kontrolü
+            # Cloudflare challenge kontrolü ve bypass
             current_url = driver.current_url
+            cloudflare_detected = False
+            
+            # İlk kontrol
             if "cloudflare.com" in current_url or "challenge" in current_url.lower():
+                cloudflare_detected = True
                 print("  ⚠️  Cloudflare challenge tespit edildi, bekleniyor...")
-                # Cloudflare challenge'ı geçmek için bekle
-                max_wait = 30  # Maksimum 30 saniye bekle
-                wait_time = 0
-                while wait_time < max_wait:
-                    time.sleep(2)
-                    wait_time += 2
-                    current_url = driver.current_url
-                    if "piccolo.com.tr" in current_url and "cloudflare.com" not in current_url:
-                        print(f"  ✅ Cloudflare challenge geçildi ({wait_time}s sonra)")
-                        break
-                    print(f"  ⏳ Cloudflare challenge bekleniyor... ({wait_time}s/{max_wait}s)")
+            
+            # Sayfa içeriğini kontrol et - Cloudflare challenge sayfası mı?
+            try:
+                page_source = driver.page_source.lower()
+                if "just a moment" in page_source or "checking your browser" in page_source or "cloudflare" in page_source:
+                    cloudflare_detected = True
+                    print("  ⚠️  Cloudflare challenge sayfası tespit edildi (içerik kontrolü)")
+            except:
+                pass
+            
+            if cloudflare_detected:
+                print("  ⏳ Cloudflare challenge geçiliyor, lütfen bekleyin...")
                 
-                if "cloudflare.com" in driver.current_url:
-                    print("  ❌ Cloudflare challenge geçilemedi, sayfa yeniden yükleniyor...")
-                    time.sleep(5)
-                    driver.get(HOT_WHEELS_URL)
-                    time.sleep(10)  # Cloudflare için ek bekleme
+                # Cloudflare challenge'ı geçmek için daha uzun ve akıllı bekleme
+                max_wait = 60  # Maksimum 60 saniye bekle (Cloud için daha uzun)
+                wait_time = 0
+                check_interval = 3  # Her 3 saniyede bir kontrol et
+                
+                while wait_time < max_wait:
+                    time.sleep(check_interval)
+                    wait_time += check_interval
+                    
+                    try:
+                        current_url = driver.current_url
+                        page_source = driver.page_source.lower()
+                        
+                        # Cloudflare geçildi mi kontrol et
+                        if "piccolo.com.tr" in current_url and "cloudflare.com" not in current_url:
+                            # Sayfa içeriğini de kontrol et
+                            if "just a moment" not in page_source and "checking your browser" not in page_source:
+                                # Link sayısını kontrol et
+                                link_count = len(driver.find_elements(By.TAG_NAME, "a"))
+                                if link_count > 10:
+                                    print(f"  ✅ Cloudflare challenge geçildi ({wait_time}s sonra, {link_count} link bulundu)")
+                                    break
+                        
+                        # Hala Cloudflare'de miyiz?
+                        if "cloudflare.com" in current_url or "just a moment" in page_source:
+                            print(f"  ⏳ Cloudflare challenge bekleniyor... ({wait_time}s/{max_wait}s)")
+                        else:
+                            # URL değişti ama içerik kontrolü yap
+                            link_count = len(driver.find_elements(By.TAG_NAME, "a"))
+                            if link_count > 10:
+                                print(f"  ✅ Cloudflare challenge geçildi ({wait_time}s sonra)")
+                                break
+                            else:
+                                print(f"  ⏳ Sayfa yükleniyor... ({wait_time}s/{max_wait}s, {link_count} link)")
+                    
+                    except Exception as e:
+                        print(f"  ⚠️  Kontrol hatası: {str(e)[:50]}")
+                        time.sleep(check_interval)
+                        continue
+                
+                # Hala Cloudflare'de miyiz?
+                final_url = driver.current_url
+                final_source = driver.page_source.lower()
+                if "cloudflare.com" in final_url or "just a moment" in final_source:
+                    print("  ⚠️  Cloudflare challenge geçilemedi, alternatif yöntem deneniyor...")
+                    
+                    # Alternatif: Sayfayı yeniden yükle ve daha uzun bekle
+                    for retry in range(3):
+                        print(f"  🔄 Yeniden deneme {retry + 1}/3...")
+                        driver.get(HOT_WHEELS_URL)
+                        time.sleep(15)  # Daha uzun bekleme
+                        
+                        final_url = driver.current_url
+                        final_source = driver.page_source.lower()
+                        link_count = len(driver.find_elements(By.TAG_NAME, "a"))
+                        
+                        if "piccolo.com.tr" in final_url and "cloudflare.com" not in final_url and link_count > 10:
+                            print(f"  ✅ Cloudflare challenge geçildi (yeniden deneme {retry + 1})")
+                            break
+                        elif link_count > 10:
+                            print(f"  ✅ Sayfa yüklendi ({link_count} link)")
+                            break
+                    
+                    # Son kontrol
+                    if "cloudflare.com" in driver.current_url:
+                        return [], "Cloudflare challenge geçilemedi (60 saniye beklendi)"
             
             # Ek bekleme - JavaScript'in çalışması için (Cloud için daha uzun)
             time.sleep(5)
             
-            # Sayfada içerik yüklenene kadar bekle - Cloudflare sonrası kontrol
-            max_retries = 3
-            retry_count = 0
-            while retry_count < max_retries:
-                try:
-                    # URL kontrolü - hala Cloudflare'de miyiz?
-                    current_url = driver.current_url
-                    if "cloudflare.com" in current_url:
-                        print(f"  ⚠️  Hala Cloudflare sayfasında (deneme {retry_count + 1}/{max_retries})")
-                        time.sleep(5)
-                        driver.get(HOT_WHEELS_URL)
-                        time.sleep(10)
-                        retry_count += 1
-                        continue
-                    
-                    # Link sayısı kontrolü
-                    link_count = len(driver.find_elements(By.TAG_NAME, "a"))
-                    if link_count > 10:
-                        print(f"  ✅ Sayfada {link_count} link bulundu")
-                        break
-                    else:
-                        print(f"  ⚠️  Sayfada sadece {link_count} link var (deneme {retry_count + 1}/{max_retries})")
-                        if retry_count < max_retries - 1:
-                            time.sleep(5)
-                            # Sayfayı yeniden yükle
-                            driver.get(HOT_WHEELS_URL)
-                            time.sleep(10)
-                        retry_count += 1
-                except Exception as e:
-                    print(f"  ⚠️  Kontrol hatası: {str(e)[:50]}")
-                    retry_count += 1
-                    if retry_count < max_retries:
-                        time.sleep(5)
-                        driver.get(HOT_WHEELS_URL)
-                        time.sleep(10)
+            # Cloudflare sonrası final kontrol
+            time.sleep(3)  # Sayfa içeriğinin yüklenmesi için
             
-            # Final kontrol
-            final_link_count = len(driver.find_elements(By.TAG_NAME, "a"))
+            # Final URL ve içerik kontrolü
             final_url = driver.current_url
-            if "cloudflare.com" in final_url:
-                return [], "Cloudflare challenge geçilemedi"
+            final_source = driver.page_source.lower()
+            final_link_count = len(driver.find_elements(By.TAG_NAME, "a"))
+            
+            # Hala Cloudflare'de miyiz?
+            if "cloudflare.com" in final_url or "just a moment" in final_source:
+                return [], "Cloudflare challenge geçilemedi (final kontrol)"
+            
+            # Link sayısı yeterli mi?
             if final_link_count < 10:
-                print(f"  ⚠️  Final kontrol: Sadece {final_link_count} link bulundu, devam ediliyor...")
+                print(f"  ⚠️  Final kontrol: Sadece {final_link_count} link bulundu")
+                # Bir kez daha bekle ve kontrol et
+                time.sleep(5)
+                final_link_count = len(driver.find_elements(By.TAG_NAME, "a"))
+                if final_link_count < 10:
+                    print(f"  ⚠️  Hala az link var ({final_link_count}), devam ediliyor...")
+            else:
+                print(f"  ✅ Sayfada {final_link_count} link bulundu")
 
             # Document ready state tekrar kontrol et (Cloudflare sonrası)
             try:
