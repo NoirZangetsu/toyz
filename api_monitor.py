@@ -49,26 +49,48 @@ PICCOLO_DB_FILE = "piccolo_stock_db.json"
 
 def setup_piccolo_driver(headless: bool = True) -> webdriver.Chrome:
     """
-    Chrome WebDriver'ı yapılandırır.
+    Piccolo için Chrome WebDriver'ı yapılandırır.
+    Google Cloud için optimize edilmiş ayarlar içerir.
     """
     chrome_options = Options()
 
     if headless:
         chrome_options.add_argument("--headless=new")
 
+    # Google Cloud için gerekli ayarlar
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--disable-software-rasterizer")
+    chrome_options.add_argument("--disable-extensions")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    
+    # Page load strategy - sayfa tam yüklenene kadar bekle
+    chrome_options.page_load_strategy = 'normal'  # 'normal', 'eager', 'none'
 
     chrome_options.add_experimental_option('prefs', {
         'profile.default_content_setting_values.notifications': 2
     })
+    
+    # Bot detection'ı önlemek için
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option('useAutomationExtension', False)
 
     # WebDriver Manager ile ChromeDriver'ı otomatik olarak yönet
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=chrome_options)
+    
+    # Bot detection script'ini devre dışı bırak
+    driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+        'source': '''
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            })
+        '''
+    })
+    
     return driver
 
 
@@ -109,12 +131,23 @@ class PiccoloMonitor:
             print(f"  🌐 Sayfa yükleniyor: {HOT_WHEELS_URL}")
             driver.get(HOT_WHEELS_URL)
 
-            # Sayfanın yüklenmesini bekle
-            time.sleep(5)
+            # Sayfanın tam yüklenmesini bekle - Google Cloud için daha uzun timeout
+            print("  ⏳ Sayfa yüklenmesi bekleniyor...")
+            try:
+                # Document ready state kontrolü
+                WebDriverWait(driver, 30).until(
+                    lambda d: d.execute_script("return document.readyState") == "complete"
+                )
+                print("  ✅ Document ready state: complete")
+            except TimeoutException:
+                print("  ⚠️  Document ready state timeout, devam ediliyor...")
+            
+            # Ek bekleme - JavaScript'in çalışması için
+            time.sleep(3)
 
             # Cookie banner'ı kapat (varsa)
             try:
-                cookie_accept = WebDriverWait(driver, 3).until(
+                cookie_accept = WebDriverWait(driver, 5).until(
                     EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Kabul') or contains(text(), 'Accept') or contains(@class, 'cookie')]"))
                 )
                 cookie_accept.click()
@@ -126,24 +159,37 @@ class PiccoloMonitor:
             print("  📜 Sayfa scroll ediliyor (lazy loading için)...")
             last_height = driver.execute_script("return document.body.scrollHeight")
             scroll_attempts = 0
-            max_scroll_attempts = 10
+            max_scroll_attempts = 15  # Google Cloud için daha fazla deneme
             
             while scroll_attempts < max_scroll_attempts:
                 driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
-                time.sleep(2)
+                time.sleep(3)  # Google Cloud için daha uzun bekleme
                 
                 new_height = driver.execute_script("return document.body.scrollHeight")
                 if new_height == last_height:
-                    time.sleep(2)
+                    # Daha fazla içerik yüklenmedi, biraz daha bekle
+                    time.sleep(3)  # Google Cloud için daha uzun bekleme
                     new_height = driver.execute_script("return document.body.scrollHeight")
                     if new_height == last_height:
-                        break
+                        print(f"  ✅ Scroll tamamlandı (deneme: {scroll_attempts + 1})")
+                        break  # Artık yeni içerik yok
                 
                 last_height = new_height
                 scroll_attempts += 1
+                print(f"  📜 Scroll {scroll_attempts}/{max_scroll_attempts} - Yükseklik: {new_height}")
             
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
-            time.sleep(3)
+            time.sleep(4)  # Google Cloud için daha uzun bekleme
+            
+            # Sayfanın tam yüklenmesini tekrar kontrol et
+            try:
+                WebDriverWait(driver, 10).until(
+                    lambda d: d.execute_script("return document.readyState") == "complete"
+                )
+            except TimeoutException:
+                pass
+            
+            print(f"  ✅ Final sayfa yüksekliği: {driver.execute_script('return document.body.scrollHeight')}")
 
             # JavaScript ile sayfadaki ürün ID'lerini çıkar ve API'ye çağrı yap (Ana yöntem)
             try:
