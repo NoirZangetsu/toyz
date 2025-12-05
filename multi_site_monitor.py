@@ -276,8 +276,8 @@ class MultiSiteMonitor:
             # Piccolo için driver kontrolü - yoksa veya kapandıysa yeniden oluştur
             if not self.piccolo_driver:
                 print("  🌐 Piccolo Chrome WebDriver başlatılıyor...")
-                self.piccolo_driver = setup_piccolo_driver(headless=True)  # Headless mod - arka planda çalışır
-                time.sleep(2)  # Driver'ın hazır olmasını bekle
+                self.piccolo_driver = setup_piccolo_driver(headless=True)
+                time.sleep(2)
             else:
                 # Driver'ın hala açık olduğunu kontrol et
                 try:
@@ -299,20 +299,16 @@ class MultiSiteMonitor:
 
             current_product_ids = {p["id"] for p in products if p.get("id")}
 
-            # İlk çalıştırma kontrolü
+            # İlk çalıştırma kontrolü (DiecastTurkey gibi)
             if site_id not in self.previous_products:
                 print(f"  ℹ️  Piccolo: İlk çalıştırma - mevcut ürünler kaydedildi")
                 self.previous_products[site_id] = current_product_ids
 
                 # İlk çalıştırmada mevcut durumu bildir
-                print(f"  🔍 Debug: TELEGRAM_ENABLED={TELEGRAM_ENABLED}, products={len(products)}, in_stock={len(in_stock_products)}")
                 if TELEGRAM_ENABLED:
-                    print("  🔍 Debug: send_initial_stock_summary çağrılıyor (Piccolo)")
                     self.send_initial_stock_summary(site_id, "Piccolo Hot Wheels Premium", products, in_stock_products, HOT_WHEELS_URL)
-                else:
-                    print("  🔍 Debug: TELEGRAM_ENABLED=False, bildirim gönderilmiyor")
             else:
-                # Yeni ürünleri bul
+                # Yeni ürünleri bul (DiecastTurkey gibi)
                 new_product_ids = current_product_ids - self.previous_products[site_id]
 
                 if new_product_ids:
@@ -361,9 +357,9 @@ class MultiSiteMonitor:
                 else:
                     print(f"  ℹ️  Piccolo: Yeni ürün yok")
 
-            # Stok değişikliği kontrolü
-            if site_id in self.previous_products:  # İlk çalıştırma değilse
-                self.detect_stock_changes(site_id, "Piccolo Hot Wheels Premium", products, HOT_WHEELS_URL)
+                # Stok değişikliği kontrolü (DiecastTurkey gibi)
+                if site_id in self.previous_products:  # İlk çalıştırma değilse
+                    self.detect_stock_changes(site_id, "Piccolo Hot Wheels Premium", products, HOT_WHEELS_URL)
 
             # Veritabanını kaydet
             monitor.save_db()
