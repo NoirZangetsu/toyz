@@ -142,8 +142,18 @@ class PiccoloMonitor:
             except TimeoutException:
                 print("  ⚠️  Document ready state timeout, devam ediliyor...")
             
-            # Ek bekleme - JavaScript'in çalışması için
-            time.sleep(3)
+            # Ek bekleme - JavaScript'in çalışması için (Cloud için daha uzun)
+            time.sleep(5)
+            
+            # Sayfada içerik yüklenene kadar bekle
+            try:
+                WebDriverWait(driver, 20).until(
+                    lambda d: len(d.find_elements(By.TAG_NAME, "a")) > 10
+                )
+                print(f"  ✅ Sayfada {len(driver.find_elements(By.TAG_NAME, 'a'))} link bulundu")
+            except TimeoutException:
+                print(f"  ⚠️  Sayfada sadece {len(driver.find_elements(By.TAG_NAME, 'a'))} link var, devam ediliyor...")
+                time.sleep(5)  # Ek bekleme
 
             # Cookie banner'ı kapat (varsa)
             try:
@@ -155,20 +165,41 @@ class PiccoloMonitor:
             except (TimeoutException, NoSuchElementException):
                 pass
 
-            # Lazy loading için scroll yap
+            # Lazy loading için scroll yap - Google Cloud için daha agresif
             print("  📜 Sayfa scroll ediliyor (lazy loading için)...")
+            
+            # Önce sayfanın başına scroll yap
+            driver.execute_script("window.scrollTo(0, 0)")
+            time.sleep(2)
+            
+            # Kademeli scroll yap - her seferinde biraz daha aşağı
+            scroll_position = 0
+            scroll_step = 500
+            max_scrolls = 20
+            
+            for i in range(max_scrolls):
+                scroll_position += scroll_step
+                driver.execute_script(f"window.scrollTo(0, {scroll_position})")
+                time.sleep(2)  # Her scroll sonrası bekle
+                
+                # Sayfa yüksekliğini kontrol et
+                page_height = driver.execute_script("return document.body.scrollHeight")
+                if scroll_position >= page_height:
+                    break
+            
+            # Sonra sayfanın sonuna scroll yap
             last_height = driver.execute_script("return document.body.scrollHeight")
             scroll_attempts = 0
-            max_scroll_attempts = 15  # Google Cloud için daha fazla deneme
+            max_scroll_attempts = 20  # Google Cloud için daha fazla deneme
             
             while scroll_attempts < max_scroll_attempts:
                 driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
-                time.sleep(3)  # Google Cloud için daha uzun bekleme
+                time.sleep(4)  # Google Cloud için daha uzun bekleme
                 
                 new_height = driver.execute_script("return document.body.scrollHeight")
                 if new_height == last_height:
                     # Daha fazla içerik yüklenmedi, biraz daha bekle
-                    time.sleep(3)  # Google Cloud için daha uzun bekleme
+                    time.sleep(4)  # Google Cloud için daha uzun bekleme
                     new_height = driver.execute_script("return document.body.scrollHeight")
                     if new_height == last_height:
                         print(f"  ✅ Scroll tamamlandı (deneme: {scroll_attempts + 1})")
@@ -178,18 +209,29 @@ class PiccoloMonitor:
                 scroll_attempts += 1
                 print(f"  📜 Scroll {scroll_attempts}/{max_scroll_attempts} - Yükseklik: {new_height}")
             
+            # Son bir kez daha scroll ve bekle
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
-            time.sleep(4)  # Google Cloud için daha uzun bekleme
+            time.sleep(5)  # Google Cloud için daha uzun bekleme
             
             # Sayfanın tam yüklenmesini tekrar kontrol et
             try:
-                WebDriverWait(driver, 10).until(
+                WebDriverWait(driver, 15).until(
                     lambda d: d.execute_script("return document.readyState") == "complete"
                 )
             except TimeoutException:
                 pass
             
+            # Link sayısını kontrol et
+            link_count = len(driver.find_elements(By.TAG_NAME, "a"))
             print(f"  ✅ Final sayfa yüksekliği: {driver.execute_script('return document.body.scrollHeight')}")
+            print(f"  ✅ Final link sayısı: {link_count}")
+            
+            # Eğer hala çok az link varsa, ek bekleme
+            if link_count < 10:
+                print(f"  ⚠️  Az link bulundu ({link_count}), ek bekleme yapılıyor...")
+                time.sleep(10)
+                link_count = len(driver.find_elements(By.TAG_NAME, "a"))
+                print(f"  ✅ Yeni link sayısı: {link_count}")
 
             # JavaScript ile sayfadaki ürün ID'lerini çıkar ve API'ye çağrı yap (Ana yöntem)
             try:
@@ -241,13 +283,47 @@ class PiccoloMonitor:
                 product_ids = driver.execute_script(product_ids_script)
                 
                 if not product_ids or len(product_ids) == 0:
-                    # Debug: Sayfadaki link sayısını kontrol et
+                    # Debug: Sayfadaki link sayısını ve örnek linkleri kontrol et
                     try:
                         link_count = driver.execute_script("return document.querySelectorAll('a[href]').length;")
                         print(f"  🔍 Debug: Sayfada {link_count} link bulundu")
-                    except:
-                        pass
-                    return [], "Sayfada ürün ID'si bulunamadı"
+                        
+                        # İlk birkaç linki göster
+                        sample_links = driver.execute_script("""
+                            const links = Array.from(document.querySelectorAll('a[href]')).slice(0, 10);
+                            return links.map(l => l.getAttribute('href'));
+                        """)
+                        print(f"  🔍 Debug: Örnek linkler: {sample_links[:5]}")
+                        
+                        # hot-wheels-premium içeren linkleri say
+                        hw_links = driver.execute_script("""
+                            const links = Array.from(document.querySelectorAll('a[href]'));
+                            return links.filter(l => {
+                                const href = l.getAttribute('href') || '';
+                                return href.includes('hot-wheels-premium');
+                            }).length;
+                        """)
+                        print(f"  🔍 Debug: hot-wheels-premium içeren linkler: {hw_links}")
+                        
+                        # Eğer çok az link varsa, tekrar bekle ve scroll yap
+                        if link_count < 50:
+                            print(f"  ⚠️  Az link bulundu, tekrar scroll yapılıyor...")
+                            for i in range(5):
+                                driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
+                                time.sleep(3)
+                            time.sleep(5)
+                            
+                            # Tekrar dene
+                            product_ids = driver.execute_script(product_ids_script)
+                            if product_ids and len(product_ids) > 0:
+                                print(f"  ✅ İkinci denemede {len(product_ids)} ürün ID'si bulundu")
+                            else:
+                                return [], f"Sayfada ürün ID'si bulunamadı (Toplam {link_count} link, {hw_links} hot-wheels linki)"
+                        else:
+                            return [], f"Sayfada ürün ID'si bulunamadı (Toplam {link_count} link)"
+                    except Exception as debug_error:
+                        print(f"  ⚠️  Debug hatası: {str(debug_error)[:50]}")
+                        return [], "Sayfada ürün ID'si bulunamadı"
                 
                 print(f"  ✅ {len(product_ids)} ürün ID'si bulundu, API çağrısı yapılıyor...")
                 
