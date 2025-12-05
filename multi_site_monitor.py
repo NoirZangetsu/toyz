@@ -77,6 +77,120 @@ def send_telegram_message(message: str) -> Tuple[bool, Optional[str]]:
         return False, str(e)
 
 
+def get_telegram_updates(offset: Optional[int] = None) -> Tuple[List[Dict], Optional[int], Optional[str]]:
+    """
+    Telegram bot üzerinden yeni mesajları alır.
+
+    Returns:
+        (mesajlar listesi, yeni offset, hata mesajı)
+    """
+    if not TELEGRAM_ENABLED:
+        return [], None, "Telegram yapılandırması eksik."
+
+    try:
+        import requests
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+        params = {"timeout": 30, "allowed_updates": ["message"]}
+        if offset:
+            params["offset"] = offset
+
+        response = requests.get(url, params=params, timeout=35)
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get("ok"):
+            updates = data.get("result", [])
+            new_offset = None
+            if updates:
+                new_offset = updates[-1]["update_id"] + 1
+            return updates, new_offset, None
+        else:
+            return [], None, "Telegram API hatası"
+
+    except Exception as e:
+        return [], None, str(e)
+
+
+def handle_telegram_commands(monitor: 'MultiSiteMonitor') -> None:
+    """
+    Telegram komutlarını işler.
+    """
+    if not TELEGRAM_ENABLED:
+        return
+
+    try:
+        updates, new_offset, error = get_telegram_updates(monitor.telegram_offset)
+
+        if error:
+            print(f"⚠️  Telegram güncelleme hatası: {error}")
+            return
+
+        if updates:
+            monitor.telegram_offset = new_offset
+
+            for update in updates:
+                if "message" in update:
+                    message = update["message"]
+                    chat_id = message["chat"]["id"]
+                    text = message.get("text", "").strip().lower()
+
+                    # Herkesten komut kabul et (chat_id'yi güncelle)
+                    # İlk komut hangi chat'ten gelirse o chat'i aktif et
+                    if str(chat_id) != str(TELEGRAM_CHAT_ID):
+                        print(f"📨 Yeni chat ID algılandı: {chat_id}")
+                        # Config'i güncelle
+                        try:
+                            with open("config.py", "r", encoding="utf-8") as f:
+                                content = f.read()
+
+                            # TELEGRAM_CHAT_ID'yi güncelle
+                            import re
+                            new_content = re.sub(
+                                r'TELEGRAM_CHAT_ID = "\d+"',
+                                f'TELEGRAM_CHAT_ID = "{chat_id}"',
+                                content
+                            )
+
+                            with open("config.py", "w", encoding="utf-8") as f:
+                                f.write(new_content)
+
+                            print(f"✅ Chat ID güncellendi: {chat_id}")
+                            send_telegram_message("✅ Bot artık bu chat'te aktif! Sistemi yeniden başlatmanız gerekebilir.\n\n💡 Komutlar: stok, ürün, durum, yardım")
+
+                        except Exception as e:
+                            print(f"❌ Chat ID güncellenirken hata: {e}")
+                            send_telegram_message("❌ Chat ID güncellenirken hata oluştu.")
+                            continue
+
+                    print(f"📨 Telegram komutu alındı: '{text}'")
+
+                    if text == "stok" or text == "ürün" or text == "urun":
+                        print(f"📊 {text} komutu işleniyor...")
+                        monitor.handle_stok_command()
+                        print("✅ Stok komutu tamamlandı")
+                    elif text == "durum":
+                        print("📊 Durum komutu işleniyor...")
+                        monitor.handle_durum_command()
+                        print("✅ Durum komutu tamamlandı")
+                    elif text == "yardım" or text == "help":
+                        print("📊 Yardım komutu işleniyor...")
+                        monitor.handle_yardim_command()
+                        print("✅ Yardım komutu tamamlandı")
+                    else:
+                        print(f"📊 Bilinmeyen komut: {text}")
+                        # Bilinmeyen komut
+                        success, error = send_telegram_message("❓ Bilinmeyen komut. Kullanılabilir komutlar:\n\n• <code>stok</code> / <code>ürün</code> - Güncel stok durumunu göster\n• <code>durum</code> - Sistem durumunu göster\n• <code>yardım</code> - Bu yardım mesajını göster")
+                        if success:
+                            print("✅ Bilinmeyen komut uyarısı gönderildi")
+                        else:
+                            print(f"❌ Bilinmeyen komut uyarısı gönderilemedi: {error}")
+
+            monitor.save_telegram_offset()
+
+    except Exception as e:
+        print(f"⚠️  Telegram komut işleme hatası: {str(e)[:100]}")
+
+
 class MultiSiteMonitor:
     """
     Birden fazla siteyi aynı anda izleyen monitor sınıfı.
@@ -86,8 +200,10 @@ class MultiSiteMonitor:
         self.interval = interval
         self.running = False
         self.previous_products: Dict[str, Set] = self.load_previous_products()
+        self.previous_stock_status: Dict[str, Dict[str, bool]] = self.load_previous_stock_status()
         self.driver = None  # DiecastTurkey için
         self.piccolo_driver = None  # Piccolo için
+        self.telegram_offset = self.load_telegram_offset()
 
     def load_previous_products(self) -> Dict[str, Set]:
         """Önceki ürünleri yükler."""
@@ -131,6 +247,24 @@ class MultiSiteMonitor:
                     json.dump(data, f, ensure_ascii=False, indent=4)
         except Exception as e:
             print(f"⚠️  Telegram offset kaydedilemedi: {e}")
+
+    def load_previous_stock_status(self) -> Dict[str, Dict[str, bool]]:
+        """Önceki stok durumlarını yükler."""
+        try:
+            if os.path.exists("previous_stock_status.json"):
+                with open("previous_stock_status.json", "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return {}
+
+    def save_previous_stock_status(self):
+        """Önceki stok durumlarını kaydeder."""
+        try:
+            with open("previous_stock_status.json", "w", encoding="utf-8") as f:
+                json.dump(self.previous_stock_status, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            print(f"⚠️  Stok durumları kaydedilemedi: {e}")
         
     def monitor_piccolo(self) -> None:
         """
@@ -171,8 +305,12 @@ class MultiSiteMonitor:
                 self.previous_products[site_id] = current_product_ids
 
                 # İlk çalıştırmada mevcut durumu bildir
+                print(f"  🔍 Debug: TELEGRAM_ENABLED={TELEGRAM_ENABLED}, products={len(products)}, in_stock={len(in_stock_products)}")
                 if TELEGRAM_ENABLED:
+                    print("  🔍 Debug: send_initial_stock_summary çağrılıyor (Piccolo)")
                     self.send_initial_stock_summary(site_id, "Piccolo Hot Wheels Premium", products, in_stock_products, HOT_WHEELS_URL)
+                else:
+                    print("  🔍 Debug: TELEGRAM_ENABLED=False, bildirim gönderilmiyor")
             else:
                 # Yeni ürünleri bul
                 new_product_ids = current_product_ids - self.previous_products[site_id]
@@ -223,6 +361,10 @@ class MultiSiteMonitor:
                 else:
                     print(f"  ℹ️  Piccolo: Yeni ürün yok")
 
+            # Stok değişikliği kontrolü
+            if site_id in self.previous_products:  # İlk çalıştırma değilse
+                self.detect_stock_changes(site_id, "Piccolo Hot Wheels Premium", products, HOT_WHEELS_URL)
+
             # Veritabanını kaydet
             monitor.save_db()
             self.save_previous_products()
@@ -234,6 +376,7 @@ class MultiSiteMonitor:
         """
         İlk çalıştırmada mevcut stok özetini gönderir.
         """
+        print(f"  🔍 Debug: send_initial_stock_summary başladı - {site_name}, ürünler: {len(products)}")
         try:
             # Başlangıç mesajı
             lines = [
@@ -286,6 +429,253 @@ class MultiSiteMonitor:
 
         except Exception as e:
             print(f"  ❌ Başlangıç özeti hatası: {str(e)[:100]}")
+
+    def detect_stock_changes(self, site_id: str, site_name: str, products: List[Dict], site_url: str):
+        """
+        Mevcut ürünlerin stok durumu değişimlerini tespit eder ve bildirim gönderir.
+        """
+        try:
+            # Mevcut ürünlerin stok durumunu al
+            current_stock_status = {str(p.get("id", "")): p.get("in_stock", False) for p in products if p.get("id")}
+
+            # İlk çalıştırma kontrolü
+            if site_id not in self.previous_stock_status:
+                print(f"  ℹ️  {site_name}: İlk çalıştırma - stok durumları kaydedildi")
+                self.previous_stock_status[site_id] = current_stock_status
+                return
+
+            # Stok değişikliği tespit et
+            now_in_stock = []  # Stokta olmaya başlayan ürünler
+            now_out_of_stock = []  # Stoktan çıkan ürünler
+
+            previous_status = self.previous_stock_status.get(site_id, {})
+
+            for product_id, current_in_stock in current_stock_status.items():
+                previous_in_stock = previous_status.get(product_id, False)
+
+                if current_in_stock and not previous_in_stock:
+                    # Stokta olmaya başladı
+                    product = next((p for p in products if str(p.get("id", "")) == product_id), None)
+                    if product:
+                        now_in_stock.append(product)
+                elif not current_in_stock and previous_in_stock:
+                    # Stoktan çıktı
+                    product = next((p for p in products if str(p.get("id", "")) == product_id), None)
+                    if product:
+                        now_out_of_stock.append(product)
+
+            # Bildirim gönder
+            if now_in_stock or now_out_of_stock:
+                lines = [
+                    "📦 <b>STOK DURUMU DEĞİŞTİ!</b>",
+                    "",
+                    f"📍 <b>Site:</b> {site_name}",
+                ]
+
+                if now_in_stock:
+                    lines.append(f"✅ <b>Stokta olmaya başlayan:</b> {len(now_in_stock)} ürün")
+                    lines.append("")
+
+                    for idx, product in enumerate(now_in_stock[:5], 1):
+                        name = product.get('name', 'İsimsiz Ürün')
+                        if len(name) > 50:
+                            name = name[:47] + "..."
+
+                        code = product.get('code', '')
+                        price = product.get('price', 'Fiyat yok')
+                        quantity = product.get('quantity', 0)
+
+                        lines.append(f"{idx}. <b>{name}</b>")
+                        if code:
+                            lines.append(f"   🏷️ {code}")
+                        lines.append(f"   💰 {price}")
+                        if quantity > 0:
+                            lines.append(f"   📦 {quantity} adet")
+                        if product.get('url'):
+                            lines.append(f"   🔗 <a href='{product['url']}'>Ürüne Git</a>")
+                        lines.append("")
+
+                    if len(now_in_stock) > 5:
+                        lines.append(f"... ve {len(now_in_stock) - 5} ürün daha")
+
+                if now_out_of_stock:
+                    if now_in_stock:
+                        lines.append("")
+                    lines.append(f"❌ <b>Stoktan çıkan:</b> {len(now_out_of_stock)} ürün")
+                    lines.append("")
+
+                    for idx, product in enumerate(now_out_of_stock[:3], 1):
+                        name = product.get('name', 'İsimsiz Ürün')
+                        if len(name) > 50:
+                            name = name[:47] + "..."
+
+                        code = product.get('code', '')
+
+                        lines.append(f"{idx}. <b>{name}</b>")
+                        if code:
+                            lines.append(f"   🏷️ {code}")
+                        if product.get('url'):
+                            lines.append(f"   🔗 <a href='{product['url']}'>Ürüne Git</a>")
+                        lines.append("")
+
+                    if len(now_out_of_stock) > 3:
+                        lines.append(f"... ve {len(now_out_of_stock) - 3} ürün daha")
+
+                lines.append("")
+                lines.append(f"🔗 <a href='{site_url}'>Mağazaya Git</a>")
+
+                if TELEGRAM_ENABLED:
+                    send_telegram_message("\n".join(lines))
+                    print(f"  📤 {site_name}: {len(now_in_stock)} stok girişi, {len(now_out_of_stock)} stok çıkışı")
+                else:
+                    print(f"  🔕 {site_name}: Stok değişikliği var ama Telegram kapalı")
+
+            # Güncel durumu kaydet
+            self.previous_stock_status[site_id] = current_stock_status
+
+        except Exception as e:
+            print(f"  ❌ Stok değişikliği tespiti hatası: {str(e)[:100]}")
+
+    def handle_stok_command(self) -> None:
+        """
+        'stok' komutunu işler - tüm sitelerin güncel stok durumunu gönderir.
+        """
+        print("📊 Stok komutu işleniyor...")
+
+        try:
+            # Piccolo stok bilgilerini al
+            try:
+                from api_monitor import get_piccolo_monitor, scrape_piccolo_sync, setup_piccolo_driver, HOT_WHEELS_URL
+                if not self.piccolo_driver:
+                    self.piccolo_driver = setup_piccolo_driver(headless=True)
+                    time.sleep(1)
+
+                monitor = get_piccolo_monitor()
+                products, error = scrape_piccolo_sync(monitor, self.piccolo_driver)
+
+                if error:
+                    piccolo_stok = f"❌ Piccolo: {error}"
+                    piccolo_products = []
+                    piccolo_in_stock = []
+                else:
+                    piccolo_products = products
+                    piccolo_in_stock = [p for p in products if p.get("in_stock")]
+                    piccolo_stok = f"✅ Piccolo: {len(products)} ürün, {len(piccolo_in_stock)} stokta"
+
+            except Exception as e:
+                piccolo_stok = f"❌ Piccolo hata: {str(e)[:50]}"
+                piccolo_products = []
+                piccolo_in_stock = []
+
+            # DiecastTurkey stok bilgilerini al
+            try:
+                if DIECASTTURKEY_AVAILABLE:
+                    from diecastturkey_monitor import setup_driver, scrape_diecastturkey_products, DIECASTTURKEY_URLS
+                    if not self.driver:
+                        self.driver = setup_driver(headless=True)
+                        time.sleep(1)
+
+                    diecast_stoks = []
+                    for site_config in DIECASTTURKEY_URLS:
+                        site_name = site_config["name"]
+                        site_url = site_config["url"]
+
+                        products, error = scrape_diecastturkey_products(site_url, self.driver)
+
+                        if error:
+                            diecast_stoks.append(f"❌ {site_name}: {error}")
+                        else:
+                            in_stock = [p for p in products if p.get("in_stock")]
+                            diecast_stoks.append(f"✅ {site_name}: {len(products)} ürün, {len(in_stock)} stokta")
+
+                    diecastturkey_stok = "\n".join(diecast_stoks)
+                else:
+                    diecastturkey_stok = "❌ DiecastTurkey modülü yüklenemedi"
+
+            except Exception as e:
+                diecastturkey_stok = f"❌ DiecastTurkey hata: {str(e)[:50]}"
+
+            # ToyzzShop stok bilgilerini al
+            try:
+                if TOYZZSHOP_AVAILABLE:
+                    from toyzzshop_monitor import get_toyzzshop_monitor, scrape_toyzzshop_sync
+                    monitor = get_toyzzshop_monitor()
+                    products, error = scrape_toyzzshop_sync(monitor)
+
+                    if error:
+                        toyzzshop_stok = f"❌ ToyzzShop: {error}"
+                    else:
+                        in_stock = [p for p in products if p.get("in_stock")]
+                        toyzzshop_stok = f"✅ ToyzzShop: {len(products)} ürün, {len(in_stock)} stokta"
+                else:
+                    toyzzshop_stok = "❌ ToyzzShop modülü yüklenemedi"
+
+            except Exception as e:
+                toyzzshop_stok = f"❌ ToyzzShop hata: {str(e)[:50]}"
+
+            # Genel stok özeti mesajı
+            timestamp = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+            message = f"""📊 <b>GÜNCEL STOK DURUMU</b>
+🕒 {timestamp}
+
+{piccolo_stok}
+{diecastturkey_stok}
+{toyzzshop_stok}
+
+💡 Detaylı bilgi için site isimlerini yazın veya 'yardım' yazın."""
+
+            success, error = send_telegram_message(message)
+            if success:
+                print("📤 Stok durumu gönderildi")
+            else:
+                print(f"❌ Stok durumu gönderilemedi: {error}")
+
+        except Exception as e:
+            error_msg = f"❌ Stok komutu hatası: {str(e)[:100]}"
+            send_telegram_message(error_msg)
+            print(f"❌ Stok komutu hatası: {str(e)[:100]}")
+
+    def handle_durum_command(self) -> None:
+        """
+        'durum' komutunu işler - sistem durumunu gösterir.
+        """
+        timestamp = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        uptime = "Sistem aktif"  # Daha sonra gerçek uptime eklenebilir
+
+        message = f"""🔄 <b>SİSTEM DURUMU</b>
+
+🕒 Son kontrol: {timestamp}
+⚡ Durum: {uptime}
+⏱️ Kontrol aralığı: {self.interval} saniye
+📱 Telegram: {'✅ Aktif' if TELEGRAM_ENABLED else '❌ Kapalı'}
+
+📍 İzlenen siteler:
+• Piccolo Hot Wheels Premium
+• DiecastTurkey Hot Wheels
+• ToyzzShop Hot Wheels"""
+
+        send_telegram_message(message)
+        print("📤 Sistem durumu gönderildi")
+
+    def handle_yardim_command(self) -> None:
+        """
+        'yardım' komutunu işler - kullanılabilir komutları gösterir.
+        """
+        message = """🤖 <b>TOYZ MONITOR BOTU</b>
+
+📋 <b>Kullanılabilir Komutlar:</b>
+
+• <code>stok</code> - Tüm sitelerin güncel stok durumunu gösterir
+• <code>durum</code> - Sistem durumunu ve ayarları gösterir
+• <code>yardım</code> - Bu yardım mesajını gösterir
+
+💡 <b>Kullanım:</b>
+Bot'a yukarıdaki komutlardan herhangi birini yazın.
+
+⚠️ <b>Not:</b> Sistem otomatik olarak yeni ürünleri bildirir."""
+
+        send_telegram_message(message)
+        print("📤 Yardım mesajı gönderildi")
 
     def monitor_diecastturkey(self) -> None:
         """
@@ -381,6 +771,10 @@ class MultiSiteMonitor:
                     else:
                         print(f"    ℹ️  Yeni ürün yok")
 
+                    # Stok değişikliği kontrolü
+                    if site_id in self.previous_products:  # İlk çalıştırma değilse
+                        self.detect_stock_changes(site_id, site_name, products, site_url)
+
                 self.save_previous_products()
 
         except Exception as e:
@@ -459,6 +853,10 @@ class MultiSiteMonitor:
                 else:
                     print(f"  ℹ️  ToyzzShop: Yeni ürün yok")
 
+                # Stok değişikliği kontrolü
+                if site_id in self.previous_products:  # İlk çalıştırma değilse
+                    self.detect_stock_changes(site_id, "ToyzzShop Hot Wheels", products, "https://www.toyzzshop.com/oyuncak-araba?q=brands/3657/exclusive/true/order/ovd")
+
             # Veritabanını kaydet
             monitor.save_db()
             self.save_previous_products()
@@ -490,6 +888,14 @@ class MultiSiteMonitor:
             print("📍 ToyzzShop")
             self.monitor_toyzzshop()
             print()
+
+        # Telegram komutlarını kontrol et
+        print("📨 Telegram komutları kontrol ediliyor...")
+        handle_telegram_commands(self)
+        print()
+
+        # Stok durumlarını kaydet
+        self.save_previous_stock_status()
     
     def start(self, continuous: bool = True) -> None:
         """
@@ -510,6 +916,12 @@ class MultiSiteMonitor:
         print(f"\n⏱️  Kontrol aralığı: {self.interval} saniye")
         if TELEGRAM_ENABLED:
             print("📱 Telegram bildirimleri: AKTİF")
+            print("💬 Telegram komutları: AKTİF (stok, durum, yardım)")
+            # Başlangıç yardım mesajı gönder
+            try:
+                self.handle_yardim_command()
+            except:
+                pass
         else:
             print("📱 Telegram bildirimleri: KAPALI")
         print("=" * 70)

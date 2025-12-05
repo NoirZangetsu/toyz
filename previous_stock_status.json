@@ -1,0 +1,52 @@
+{
+    "piccolo_hw_premium": {
+        "piccolo_898444": true,
+        "piccolo_59441": true,
+        "piccolo_813224": true,
+        "piccolo_158563": true,
+        "piccolo_267766": true,
+        "piccolo_111587": true,
+        "piccolo_374203": true,
+        "piccolo_50209": true,
+        "piccolo_844687": true,
+        "piccolo_194203": true,
+        "piccolo_707955": true
+    },
+    "diecastturkey_hw": {
+        "3715": true,
+        "3714": true,
+        "3713": true,
+        "3712": false,
+        "3658": true,
+        "3657": true,
+        "3654": true,
+        "3629": true,
+        "3600": true,
+        "3586": true,
+        "3505": true,
+        "3521": false,
+        "3506": false,
+        "3092": false,
+        "745": false
+    },
+    "toyzzshop": {
+        "toyzz_0": true,
+        "toyzz_1": true,
+        "toyzz_2": true,
+        "toyzz_3": true,
+        "toyzz_4": true,
+        "toyzz_5": true,
+        "toyzz_6": true,
+        "toyzz_7": true,
+        "toyzz_8": true,
+        "toyzz_9": true,
+        "toyzz_10": false,
+        "toyzz_11": false,
+        "toyzz_12": false,
+        "toyzz_13": false,
+        "toyzz_14": false,
+        "toyzz_15": false,
+        "toyzz_16": false,
+        "toyzz_17": false
+    }
+}

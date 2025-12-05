@@ -157,11 +157,113 @@ class PiccoloMonitor:
             except (TimeoutException, NoSuchElementException):
                 pass
 
-            # Sayfa yüklenmesini tetikle - scroll yap
-            for i in range(3):
-                driver.execute_script(f"window.scrollTo(0, {i * 1000})")
-                time.sleep(1)
+            # JavaScript ile sayfadaki ürün ID'lerini çıkar ve API'yi kullan
+            try:
+                print("  🔍 JavaScript ile ürün ID'leri çıkarılıyor...")
+                
+                # Sayfadaki tüm ürün linklerini bul ve ID'lerini çıkar
+                js_code = """
+                let productIds = [];
+                const seenIds = new Set();
+                
+                // Tüm linklerden ürün ID'lerini çıkar
+                const links = document.querySelectorAll('a[href]');
+                links.forEach(link => {
+                    const href = link.getAttribute('href');
+                    if (!href) return;
+                    
+                    const fullUrl = href.startsWith('http') ? href : (href.startsWith('/') ? 'https://www.piccolo.com.tr' + href : '');
+                    
+                    // Ürün detay sayfası URL'lerini bul
+                    const idMatch = fullUrl.match(/\\/hot-wheels-premium\\/(\\d+)\\/?/);
+                    if (idMatch) {
+                        const productId = idMatch[1];
+                        if (!seenIds.has(productId)) {
+                            seenIds.add(productId);
+                            productIds.push(productId);
+                        }
+                    }
+                });
+                
+                return productIds;
+                """
+                
+                product_ids = driver.execute_script(js_code)
+                
+                if product_ids and len(product_ids) > 0:
+                    print(f"  ✅ {len(product_ids)} ürün ID'si bulundu: {', '.join(product_ids[:10])}{'...' if len(product_ids) > 10 else ''}")
+                    
+                    # API'yi kullanarak ürün detaylarını al
+                    product_ids_str = ','.join(product_ids)
+                    api_url = f"https://www.piccolo.com.tr/api/Product/GetProductCategoryHierarchy?c=trtry0000&productIds={product_ids_str}"
+                    
+                    print(f"  🌐 API çağrısı yapılıyor: {api_url[:80]}...")
+                    
+                    try:
+                        response = requests.get(api_url, timeout=10)
+                        response.raise_for_status()
+                        api_data = response.json()
+                        
+                        if api_data and "productCategoryTreeList" in api_data:
+                            tree_list = api_data["productCategoryTreeList"]
+                            
+                            for item in tree_list:
+                                if isinstance(item, dict) and "productId" in item:
+                                    product_id = str(item["productId"])
+                                    
+                                    # Ürün bilgilerini çıkar
+                                    product_name = item.get("productName", "İsimsiz Ürün")
+                                    product_url = f"https://www.piccolo.com.tr/hot-wheels-premium/{product_id}/"
+                                    
+                                    # Stok durumu - API'den gelen bilgiye göre
+                                    is_in_stock = item.get("inStock", True)
+                                    
+                                    product = {
+                                        "id": product_id,
+                                        "name": product_name,
+                                        "code": item.get("productCode", ""),
+                                        "price": item.get("price", "0 TL"),
+                                        "url": product_url,
+                                        "in_stock": is_in_stock,
+                                        "quantity": item.get("stockQuantity", 0) if is_in_stock else 0
+                                    }
+                                    
+                                    products.append(product)
+                            
+                            if len(products) > 0:
+                                print(f"  ✅ API ile {len(products)} ürün alındı")
+                                return products, None
+                    except Exception as api_error:
+                        print(f"  ⚠️  API çağrısı hatası: {str(api_error)[:50]}")
+                        # Devam et, normal scraping yöntemini dene
+                
+            except Exception as e:
+                print(f"  ⚠️  JavaScript ürün ID çıkarma hatası: {str(e)[:50]}")
+                # Devam et, normal scraping yöntemini dene
 
+            # Sayfa yüklenmesini tetikle - lazy loading için daha fazla scroll yap
+            last_height = driver.execute_script("return document.body.scrollHeight")
+            scroll_attempts = 0
+            max_scroll_attempts = 10
+            
+            while scroll_attempts < max_scroll_attempts:
+                # Sayfanın sonuna scroll yap
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
+                time.sleep(2)  # Lazy loading için bekleme
+                
+                # Yeni yüklenen içerik var mı kontrol et
+                new_height = driver.execute_script("return document.body.scrollHeight")
+                if new_height == last_height:
+                    # Daha fazla içerik yüklenmedi, biraz daha bekle
+                    time.sleep(2)
+                    new_height = driver.execute_script("return document.body.scrollHeight")
+                    if new_height == last_height:
+                        break  # Artık yeni içerik yok
+                
+                last_height = new_height
+                scroll_attempts += 1
+            
+            # Son bir kez daha scroll yap ve bekle
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
             time.sleep(3)
 
@@ -175,58 +277,155 @@ class PiccoloMonitor:
                 ".product",
                 ".product-container",
                 ".card",
-                ".grid-item"
+                ".grid-item",
+                "[class*='product']",
+                "[class*='item']",
+                "article",
+                ".col-md-3",
+                ".col-sm-4",
+                ".col-xs-6"
             ]
 
             product_elements = []
 
             for selector in selectors_to_try:
                 try:
-                    product_elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                    if len(product_elements) > 0:
-                        print(f"  ✅ Piccolo seçici bulundu: {selector} ({len(product_elements)} ürün)")
+                    elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                    if len(elements) > 0:
+                        print(f"  ✅ Piccolo seçici bulundu: {selector} ({len(elements)} element)")
+                        product_elements = elements
                         break
                 except Exception:
                     continue
 
+            # Eğer ürün container'ları bulunamadıysa, tüm linkleri ara
             if len(product_elements) == 0:
-                # Alternatif yöntem - ürün linklerini ara
+                print("  ⚠️  Ürün container'ları bulunamadı, tüm linkler taranıyor...")
                 try:
-                    product_elements = driver.find_elements(By.CSS_SELECTOR, 'a[href*="/hot-wheels-premium"]')
+                    # Tüm linkleri bul
+                    all_links = driver.find_elements(By.TAG_NAME, "a")
+                    print(f"  🔍 Toplam {len(all_links)} link bulundu, filtreleme yapılıyor...")
+                    
+                    product_elements = []
+                    seen_urls = set()
+                    
+                    for link in all_links:
+                        try:
+                            href = link.get_attribute("href")
+                            if not href:
+                                continue
+                            
+                            # Tam URL oluştur
+                            if href.startswith('/'):
+                                full_url = f"https://www.piccolo.com.tr{href}"
+                            elif href.startswith('http') and 'piccolo.com.tr' in href:
+                                full_url = href
+                            else:
+                                continue
+                            
+                            # Ürün detay sayfası mı kontrol et
+                            # Format: /hot-wheels-premium/12345/ veya /urun/12345/ veya benzeri
+                            if (re.search(r'/hot-wheels-premium/\d+/', full_url) or 
+                                re.search(r'/urun/\d+/', full_url) or
+                                (re.search(r'/\d+/', full_url) and 'hot-wheels' in full_url.lower())):
+                                # Kategori sayfası değilse (sadece /hot-wheels-premium değilse)
+                                if not re.search(r'/hot-wheels-premium/?$', full_url):
+                                    if full_url not in seen_urls:
+                                        seen_urls.add(full_url)
+                                        product_elements.append(link)
+                        except Exception:
+                            continue
+                    
                     print(f"  ℹ️  Ürün linkleri bulundu: {len(product_elements)}")
-                except Exception:
+                    if len(product_elements) == 0:
+                        # Debug: İlk birkaç linki göster
+                        print(f"  🔍 Debug: İlk 10 link örneği:")
+                        for i, link in enumerate(all_links[:10]):
+                            try:
+                                href = link.get_attribute("href")
+                                if href:
+                                    print(f"    {i+1}. {href[:80]}")
+                            except:
+                                pass
+                except Exception as e:
+                    print(f"  ⚠️  Ürün linkleri aranırken hata: {str(e)[:50]}")
+                    import traceback
+                    print(f"  🔍 Debug traceback: {traceback.format_exc()[:200]}")
                     return [], "Hiçbir ürün elementi bulunamadı"
 
-            # İlk 50 ürünü işle
-            for i, item in enumerate(product_elements[:50]):
+            # Tüm ürünleri işle (limit kaldırıldı)
+            seen_product_ids = set()  # Duplicate kontrolü için
+            seen_urls = set()  # URL duplicate kontrolü
+            print(f"  🔍 Toplam {len(product_elements)} element bulundu, işleniyor...")
+            
+            for i, item in enumerate(product_elements):
                 try:
                     # Ürün linkini al
-                    href = item.get_attribute("href")
+                    href = None
+                    link_element = None
+                    
+                    # Önce item'ın kendisi link mi kontrol et
+                    try:
+                        tag_name = item.tag_name.lower()
+                        if tag_name == 'a':
+                            href = item.get_attribute("href")
+                            link_element = item
+                    except:
+                        pass
+                    
+                    # Eğer link değilse, içindeki linki ara
                     if not href:
-                        # Eğer item link değilse, içindeki linki ara
                         try:
+                            # Önce doğrudan a tag'ini ara
                             link_element = item.find_element(By.TAG_NAME, "a")
                             href = link_element.get_attribute("href")
                         except NoSuchElementException:
-                            continue
+                            # CSS selector ile ara
+                            try:
+                                link_element = item.find_element(By.CSS_SELECTOR, "a[href]")
+                                href = link_element.get_attribute("href")
+                            except NoSuchElementException:
+                                continue
 
-                    if not href:
+                    if not href or not link_element:
                         continue
 
                     # Tam URL oluştur
                     if href.startswith('/'):
                         product_url = f"https://www.piccolo.com.tr{href}"
-                    elif href.startswith('http'):
+                    elif href.startswith('http') and 'piccolo.com.tr' in href:
                         product_url = href
                     else:
                         continue
+                    
+                    # URL duplicate kontrolü
+                    if product_url in seen_urls:
+                        continue
+                    seen_urls.add(product_url)
 
                     # Ürün ID'sini URL'den çıkar
-                    product_id_match = re.search(r'/(\d+)/', product_url)
+                    product_id = None
+                    product_id_match = re.search(r'/hot-wheels-premium/(\d+)/', product_url)
                     if product_id_match:
                         product_id = product_id_match.group(1)
                     else:
-                        product_id = f"piccolo_{i}"
+                        # Alternatif: /urun/12345/ formatı
+                        product_id_match = re.search(r'/urun/(\d+)/', product_url)
+                        if product_id_match:
+                            product_id = product_id_match.group(1)
+                        else:
+                            # Son çare: herhangi bir sayısal ID
+                            product_id_match = re.search(r'/(\d+)/', product_url)
+                            if product_id_match:
+                                product_id = product_id_match.group(1)
+                            else:
+                                # URL'den hash oluştur
+                                product_id = f"piccolo_{hash(product_url) % 1000000}"
+                    
+                    # Duplicate kontrolü
+                    if product_id in seen_product_ids:
+                        continue
+                    seen_product_ids.add(product_id)
 
                     # Ürün bilgilerini çıkar
                     container_text = item.text
