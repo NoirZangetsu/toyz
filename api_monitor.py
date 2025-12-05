@@ -51,6 +51,7 @@ def setup_piccolo_driver(headless: bool = True) -> webdriver.Chrome:
     """
     Piccolo için Chrome WebDriver'ı yapılandırır.
     Google Cloud için optimize edilmiş ayarlar içerir.
+    Cloudflare bypass için özel ayarlar eklenmiştir.
     """
     chrome_options = Options()
 
@@ -65,29 +66,53 @@ def setup_piccolo_driver(headless: bool = True) -> webdriver.Chrome:
     chrome_options.add_argument("--disable-extensions")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    
+    # Cloudflare bypass için daha gerçekçi user agent
+    chrome_options.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    
+    # Cloudflare bypass için ek ayarlar
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_argument("--disable-features=IsolateOrigins,site-per-process")
+    chrome_options.add_argument("--disable-site-isolation-trials")
+    chrome_options.add_argument("--lang=tr-TR,tr")
+    chrome_options.add_argument("--accept-lang=tr-TR,tr;q=0.9,en;q=0.8")
     
     # Page load strategy - sayfa tam yüklenene kadar bekle
     chrome_options.page_load_strategy = 'normal'  # 'normal', 'eager', 'none'
 
     chrome_options.add_experimental_option('prefs', {
-        'profile.default_content_setting_values.notifications': 2
+        'profile.default_content_setting_values.notifications': 2,
+        'intl.accept_languages': 'tr-TR,tr;q=0.9,en;q=0.8'
     })
     
     # Bot detection'ı önlemek için
-    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
 
     # WebDriver Manager ile ChromeDriver'ı otomatik olarak yönet
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=chrome_options)
     
-    # Bot detection script'ini devre dışı bırak
+    # Bot detection script'lerini devre dışı bırak - Cloudflare bypass için geliştirilmiş
     driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
         'source': '''
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
-            })
+            });
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5]
+            });
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['tr-TR', 'tr', 'en-US', 'en']
+            });
+            window.navigator.chrome = {
+                runtime: {}
+            };
+            Object.defineProperty(navigator, 'permissions', {
+                get: () => ({
+                    query: () => Promise.resolve({ state: 'granted' })
+                })
+            });
         '''
     })
     
@@ -142,19 +167,87 @@ class PiccoloMonitor:
             except TimeoutException:
                 print("  ⚠️  Document ready state timeout, devam ediliyor...")
             
+            # Cloudflare challenge kontrolü
+            current_url = driver.current_url
+            if "cloudflare.com" in current_url or "challenge" in current_url.lower():
+                print("  ⚠️  Cloudflare challenge tespit edildi, bekleniyor...")
+                # Cloudflare challenge'ı geçmek için bekle
+                max_wait = 30  # Maksimum 30 saniye bekle
+                wait_time = 0
+                while wait_time < max_wait:
+                    time.sleep(2)
+                    wait_time += 2
+                    current_url = driver.current_url
+                    if "piccolo.com.tr" in current_url and "cloudflare.com" not in current_url:
+                        print(f"  ✅ Cloudflare challenge geçildi ({wait_time}s sonra)")
+                        break
+                    print(f"  ⏳ Cloudflare challenge bekleniyor... ({wait_time}s/{max_wait}s)")
+                
+                if "cloudflare.com" in driver.current_url:
+                    print("  ❌ Cloudflare challenge geçilemedi, sayfa yeniden yükleniyor...")
+                    time.sleep(5)
+                    driver.get(HOT_WHEELS_URL)
+                    time.sleep(10)  # Cloudflare için ek bekleme
+            
             # Ek bekleme - JavaScript'in çalışması için (Cloud için daha uzun)
             time.sleep(5)
             
-            # Sayfada içerik yüklenene kadar bekle
-            try:
-                WebDriverWait(driver, 20).until(
-                    lambda d: len(d.find_elements(By.TAG_NAME, "a")) > 10
-                )
-                print(f"  ✅ Sayfada {len(driver.find_elements(By.TAG_NAME, 'a'))} link bulundu")
-            except TimeoutException:
-                print(f"  ⚠️  Sayfada sadece {len(driver.find_elements(By.TAG_NAME, 'a'))} link var, devam ediliyor...")
-                time.sleep(5)  # Ek bekleme
+            # Sayfada içerik yüklenene kadar bekle - Cloudflare sonrası kontrol
+            max_retries = 3
+            retry_count = 0
+            while retry_count < max_retries:
+                try:
+                    # URL kontrolü - hala Cloudflare'de miyiz?
+                    current_url = driver.current_url
+                    if "cloudflare.com" in current_url:
+                        print(f"  ⚠️  Hala Cloudflare sayfasında (deneme {retry_count + 1}/{max_retries})")
+                        time.sleep(5)
+                        driver.get(HOT_WHEELS_URL)
+                        time.sleep(10)
+                        retry_count += 1
+                        continue
+                    
+                    # Link sayısı kontrolü
+                    link_count = len(driver.find_elements(By.TAG_NAME, "a"))
+                    if link_count > 10:
+                        print(f"  ✅ Sayfada {link_count} link bulundu")
+                        break
+                    else:
+                        print(f"  ⚠️  Sayfada sadece {link_count} link var (deneme {retry_count + 1}/{max_retries})")
+                        if retry_count < max_retries - 1:
+                            time.sleep(5)
+                            # Sayfayı yeniden yükle
+                            driver.get(HOT_WHEELS_URL)
+                            time.sleep(10)
+                        retry_count += 1
+                except Exception as e:
+                    print(f"  ⚠️  Kontrol hatası: {str(e)[:50]}")
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        time.sleep(5)
+                        driver.get(HOT_WHEELS_URL)
+                        time.sleep(10)
+            
+            # Final kontrol
+            final_link_count = len(driver.find_elements(By.TAG_NAME, "a"))
+            final_url = driver.current_url
+            if "cloudflare.com" in final_url:
+                return [], "Cloudflare challenge geçilemedi"
+            if final_link_count < 10:
+                print(f"  ⚠️  Final kontrol: Sadece {final_link_count} link bulundu, devam ediliyor...")
 
+            # Document ready state tekrar kontrol et (Cloudflare sonrası)
+            try:
+                WebDriverWait(driver, 15).until(
+                    lambda d: d.execute_script("return document.readyState") == "complete"
+                )
+                print("  ✅ Document ready state (Cloudflare sonrası): complete")
+            except TimeoutException:
+                print("  ⚠️  Document ready state timeout (Cloudflare sonrası), devam ediliyor...")
+            
+            # Ek bekleme - sayfa içeriğinin yüklenmesi için
+            time.sleep(3)
+            
             # Cookie banner'ı kapat (varsa)
             try:
                 cookie_accept = WebDriverWait(driver, 5).until(
@@ -162,6 +255,7 @@ class PiccoloMonitor:
                 )
                 cookie_accept.click()
                 time.sleep(1)
+                print("  ✅ Cookie banner kapatıldı")
             except (TimeoutException, NoSuchElementException):
                 pass
 
