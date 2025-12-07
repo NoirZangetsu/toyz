@@ -1,0 +1,105 @@
+========================================
+🚀 GOOGLE CLOUD'DA PICCOLO MONITOR
+========================================
+
+## 📋 Hızlı Komutlar (Copy & Paste)
+
+### 1️⃣ İlk Kez Setup
+cd ~/toyz && bash GOOGLE_CLOUD_SETUP.sh
+
+### 2️⃣ Test Et (Headless vs GUI)
+python test_piccolo_gcloud.py
+
+### 3️⃣ Monitor Başlat (Screen ile)
+screen -S piccolo
+source venv/bin/activate
+export PYTHONIOENCODING=utf-8
+python multi_site_monitor.py 180
+
+### 4️⃣ Detach (Arka planda çalış)
+Ctrl+A, sonra D
+
+### 5️⃣ Session'ları Listele
+screen -ls
+
+### 6️⃣ Log'ları Görmek
+tail -f monitor.log
+
+### 7️⃣ Session'a Geri Dön
+screen -r piccolo
+
+### 8️⃣ Session'ı Kapat
+exit (session içinde)
+
+========================================
+
+## 🔍 Debug Komutları
+
+# Debug HTML'i kontrol et
+cat piccolo_debug.html | head -200
+
+# ID sayısını say
+grep -o 'data-id="[^"]*"' piccolo_debug.html | wc -l
+
+# Son 50 satırı görmek
+tail -50 monitor.log
+
+# Hata araması
+grep -i "error\|fail\|❌" monitor.log
+
+# Realtime log
+tail -f monitor.log
+
+========================================
+
+## 🛠️ Kurulum Adımları (Manuel)
+
+# 1. SSH'ye bağlan (Local terminal'den)
+gcloud compute ssh instance-name --zone=us-central1-a
+
+# 2. Google Cloud VM'de:
+cd ~/toyz
+
+# 3. venv'i aktivate et
+source venv/bin/activate
+
+# 4. Güncelle
+pip install -r requirements.txt
+
+# 5. Test
+python api_monitor.py
+
+# 6. Monitor başlat
+screen -S piccolo
+python multi_site_monitor.py 180
+
+# 7. Detach: Ctrl+A, D
+
+========================================
+
+## 🚨 Eğer "0 ID bulundu" hatası alırsan:
+
+# Test et
+python test_piccolo_gcloud.py
+
+# Eğer GUI Mode başarılıysa, config dosyasını düzenle:
+nano api_monitor.py
+
+# Şu satırı bul (80. satır civarında):
+# self.piccolo_driver = setup_piccolo_driver(headless=True)
+
+# Şu şekilde değiştir:
+# self.piccolo_driver = setup_piccolo_driver(headless=False)
+
+========================================
+
+## 🎯 Google Cloud'da Başarılı Çalıştırma Özeti
+
+✅ Setup tamamlandı
+✅ Test başarılı (10 ID bulundu)
+✅ Monitor screen'de çalışıyor
+✅ Log'larda "✅ 10 ürün çekildi" görülüyor
+✅ Telegram'dan notifikasyon alındı
+
+========================================
+

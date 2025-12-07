@@ -45,11 +45,20 @@ PICCOLO_DB_FILE = "piccolo_stock_db.json"
 
 
 def setup_piccolo_driver(headless: bool = True) -> webdriver.Chrome:
-    """Chrome WebDriver - Cloudflare & Google Cloud optimized"""
+    """Chrome WebDriver - Cloudflare & Google Cloud optimized
+    
+    Google Cloud'da headless=False, Lokalde headless=True kullan
+    """
     chrome_options = Options()
     
+    # Google Cloud'da headless'i kapat (Cloudflare bot detection'u bypass)
+    # Lokalde headless=True ile çalışır
     if headless:
+        # Lokalde headless mode
         chrome_options.add_argument("--headless=new")
+    else:
+        # Google Cloud'da GUI mode (Cloudflare'ı bypass etmek için)
+        logger.info("⚠️  GUI Mode Etkin (Google Cloud uyumluluğu için)")
     
     # Google Cloud optimizations
     chrome_options.add_argument("--no-sandbox")
@@ -58,19 +67,28 @@ def setup_piccolo_driver(headless: bool = True) -> webdriver.Chrome:
     chrome_options.add_argument("--disable-software-rasterizer")
     chrome_options.add_argument("--disable-extensions")
     
-    # Bot detection evasion
+    # Bot detection evasion - ENHANCED
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument(
-        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    )
+    
+    # Rotating User-Agent (Cloudflare bypass için)
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    ]
+    import random
+    user_agent = random.choice(user_agents)
+    chrome_options.add_argument(f"user-agent={user_agent}")
+    logger.debug(f"  Using User-Agent: {user_agent[:50]}...")
     
     # Page load strategy
     chrome_options.page_load_strategy = 'normal'
     
     # Disable notifications
     chrome_options.add_experimental_option('prefs', {
-        'profile.default_content_setting_values.notifications': 2
+        'profile.default_content_setting_values.notifications': 2,
+        'profile.managed_default_content_settings.images': 2,  # Resimleri yükleme (hız için)
     })
     
     # Automation flags
@@ -81,9 +99,19 @@ def setup_piccolo_driver(headless: bool = True) -> webdriver.Chrome:
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=chrome_options)
     
-    # Hide webdriver property via CDP
+    # Hide webdriver property via CDP (CRITICAL)
     driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
-        'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined})'
+        'source': '''
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            });
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5]
+            });
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['tr-TR', 'tr', 'en-US', 'en']
+            });
+        '''
     })
     
     return driver
@@ -129,20 +157,20 @@ class PiccoloMonitor:
             logger.info(f"  🌐 Sayfaya gidiyor: {HOT_WHEELS_URL}")
             driver.get(HOT_WHEELS_URL)
             
-            # Cloudflare challenge çözülmesini bekle
-            logger.info("  ⏳ Cloudflare challenge çözülüyor (5s)...")
-            time.sleep(5)
+            # Cloudflare challenge çözülmesini bekle (Google Cloud'da daha uzun)
+            logger.info("  ⏳ Cloudflare challenge çözülüyor (10s - Google Cloud uyumlu)...")
+            time.sleep(10)  # Google Cloud'da daha uzun bekleme
             
             # Document ready
             try:
-                WebDriverWait(driver, 20).until(
+                WebDriverWait(driver, 30).until(  # 30s'ye çıkardık
                     lambda d: d.execute_script("return document.readyState") == "complete"
                 )
                 logger.info("  ✅ Document ready")
             except TimeoutException:
                 logger.warning("  ⚠️  Document ready timeout, devam ediliyor...")
             
-            time.sleep(2)
+            time.sleep(3)  # 3s bekleme (2s'den artırdık)
             
             # Cookie banner
             try:
@@ -157,11 +185,22 @@ class PiccoloMonitor:
             # JavaScript ile ürün ID'lerini çıkart
             logger.info("  🔍 JavaScript ile ürün ID'leri çıkarılıyor...")
             
-            # Enhanced JS - Daha esnek ve debug bilgisi verir
+            # Enhanced JS - Google Cloud ve Lokal uyumlu
             js_code = """
             let ids = [];
             const seen = new Set();
-            let debug_info = {methods: {}, counts: {}};
+            let debug_info = {methods: {}, counts: {}, env: {}};
+            
+            // Environment detection
+            debug_info.env.url = window.location.href;
+            debug_info.env.doctype = document.doctype ? document.doctype.name : 'unknown';
+            debug_info.env.has_jquery = typeof jQuery !== 'undefined';
+            
+            // Tüm attribute'ları ara
+            try {
+                const allElements = document.querySelectorAll('*');
+                debug_info.counts.total_elements = allElements.length;
+            } catch(e) {}
             
             // Method 1: data-id attribute (ana yöntem)
             try {
@@ -174,18 +213,22 @@ class PiccoloMonitor:
                         ids.push(id);
                     }
                 });
+                if (elements.length > 0) {
+                    const sample = elements[0].outerHTML.substring(0, 100);
+                    debug_info.sample_data_id = sample;
+                }
                 debug_info.methods.method1 = ids.length > 0 ? 'SUCCESS' : 'FOUND_' + elements.length;
             } catch(e) {
                 debug_info.methods.method1 = 'ERROR: ' + e.message;
             }
             
-            // Method 2: data-product-id attribute
+            // Method 2: class selector ile ara
             if (ids.length === 0) {
                 try {
-                    const elements = document.querySelectorAll('[data-product-id]');
-                    debug_info.counts.data_product_id = elements.length;
+                    const elements = document.querySelectorAll('[class*="item"], [class*="product"], [class*="card"]');
+                    debug_info.counts.class_selector = elements.length;
                     elements.forEach(el => {
-                        const id = el.getAttribute('data-product-id');
+                        const id = el.getAttribute('data-id') || el.id;
                         if (id && !seen.has(id) && /^\\d+$/.test(id)) {
                             seen.add(id);
                             ids.push(id);
@@ -197,37 +240,48 @@ class PiccoloMonitor:
                 }
             }
             
-            // Method 3: class='detailUrl' ile bul
+            // Method 3: XPath scan (Cloudflare sayfalarında çalışabiliyor)
             if (ids.length === 0) {
                 try {
-                    const elements = document.querySelectorAll('.detailUrl, [class*="detail"]');
-                    debug_info.counts.detail_class = elements.length;
-                    elements.forEach(el => {
+                    const xpath = '//*[@data-id]';
+                    const result = document.evaluate(xpath, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+                    debug_info.counts.xpath_data_id = result.snapshotLength;
+                    for (let i = 0; i < result.snapshotLength; i++) {
+                        const el = result.snapshotItem(i);
                         const id = el.getAttribute('data-id');
                         if (id && !seen.has(id) && /^\\d+$/.test(id)) {
                             seen.add(id);
                             ids.push(id);
                         }
-                    });
-                    debug_info.methods.method3 = ids.length > 0 ? 'SUCCESS' : 'FOUND_' + elements.length;
+                    }
+                    debug_info.methods.method3 = ids.length > 0 ? 'SUCCESS' : 'FOUND_' + result.snapshotLength;
                 } catch(e) {
                     debug_info.methods.method3 = 'ERROR: ' + e.message;
                 }
             }
             
-            // Method 4: Tüm div'leri scan et
+            // Method 4: Script tag'larında veri ara (SPA sayfalarında)
             if (ids.length === 0) {
                 try {
-                    const divs = document.querySelectorAll('div[data-id]');
-                    debug_info.counts.div_data_id = divs.length;
-                    divs.forEach(el => {
-                        const id = el.getAttribute('data-id');
-                        if (id && !seen.has(id) && /^\\d+$/.test(id)) {
-                            seen.add(id);
-                            ids.push(id);
+                    const scripts = document.querySelectorAll('script');
+                    let found_in_script = false;
+                    for (let script of scripts) {
+                        const text = script.textContent;
+                        if (text.includes('productId') || text.includes('data-id')) {
+                            found_in_script = true;
+                            const matches = text.match(/["\']data-id["\']\\s*:\\s*["\']?(\\d+)/g);
+                            if (matches) {
+                                matches.forEach(m => {
+                                    const id = m.match(/\\d+/)[0];
+                                    if (id && !seen.has(id)) {
+                                        seen.add(id);
+                                        ids.push(id);
+                                    }
+                                });
+                            }
                         }
-                    });
-                    debug_info.methods.method4 = ids.length > 0 ? 'SUCCESS' : 'FOUND_' + divs.length;
+                    }
+                    debug_info.methods.method4 = found_in_script ? 'FOUND_IN_SCRIPT' : 'NO_SCRIPT_DATA';
                 } catch(e) {
                     debug_info.methods.method4 = 'ERROR: ' + e.message;
                 }
@@ -236,6 +290,7 @@ class PiccoloMonitor:
             debug_info.page_title = document.title;
             debug_info.page_html_length = document.documentElement.outerHTML.length;
             debug_info.final_count = ids.length;
+            debug_info.body_html_length = document.body ? document.body.innerHTML.length : 0;
             
             return {ids: ids, debug: debug_info};
             """
@@ -248,25 +303,48 @@ class PiccoloMonitor:
             logger.debug(f"  📊 Debug info: {debug_info}")
             
             if not product_ids:
-                # Debug: Sayfayı kaydet
+                # Debug: Sayfayı kaydet (Google Cloud'da problem diagnozu için)
                 try:
                     with open("piccolo_debug.html", "w", encoding="utf-8") as f:
-                        f.write(driver.page_source[:50000])
+                        f.write(driver.page_source[:100000])  # 100KB kaydet
                     logger.info("  💾 Debug HTML kaydedildi: piccolo_debug.html")
-                except:
-                    pass
+                    
+                    # Debug bilgileri
+                    logger.debug(f"  📊 Debug info: {debug_info}")
+                except Exception as e:
+                    logger.warning(f"  ⚠️  Debug HTML kaydetme hatası: {e}")
                 
-                # Scroll dene
-                logger.warning("  ⚠️  ID bulunamadı, scroll yapılıyor...")
-                for i in range(5):
-                    driver.execute_script("window.scrollBy(0, window.innerHeight)")
-                    time.sleep(1)
+                # Agresif scroll (Google Cloud'da lazy loading)
+                logger.warning("  ⚠️  ID bulunamadı, agresif scroll yapılıyor...")
                 
-                result = driver.execute_script(js_code)
-                product_ids = result.get('ids', [])
-                debug_info = result.get('debug', {})
+                # 10 kez scroll + daha uzun bekleme
+                for i in range(10):
+                    driver.execute_script("window.scrollBy(0, window.innerHeight * 2)")
+                    time.sleep(2)  # 2s bekleme
+                    
+                    # Her 3 scroll'da kontrol et
+                    if (i + 1) % 3 == 0:
+                        intermediate_result = driver.execute_script(js_code)
+                        intermediate_ids = intermediate_result.get('ids', [])
+                        if intermediate_ids:
+                            logger.info(f"  ✅ Scroll {i+1}'te {len(intermediate_ids)} ID bulundu!")
+                            product_ids = intermediate_ids
+                            debug_info = intermediate_result.get('debug', {})
+                            break
+                
+                # Eğer hala bulunamadıysa, sayfanın en altına git
+                if not product_ids:
+                    logger.info("  🔄 Sayfanın en altına gidiyor...")
+                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
+                    time.sleep(3)
+                    
+                    # Son deneme
+                    result = driver.execute_script(js_code)
+                    product_ids = result.get('ids', [])
+                    debug_info = result.get('debug', {})
+                
                 logger.info(f"  ↻ Scroll sonrası: {len(product_ids)} ID")
-                logger.debug(f"  📊 Debug info (after scroll): {debug_info}")
+                logger.debug(f"  📊 Final debug info: {debug_info}")
             
             if not product_ids:
                 return [], "Selenium'den ürün ID'si bulunamadı"
