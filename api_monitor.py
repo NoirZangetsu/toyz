@@ -53,12 +53,9 @@ def setup_piccolo_driver(headless: bool = True) -> webdriver.Chrome:
     
     # Google Cloud'da headless'i kapat (Cloudflare bot detection'u bypass)
     # Lokalde headless=True ile çalışır
-    if headless:
-        # Lokalde headless mode
-        chrome_options.add_argument("--headless=new")
-    else:
-        # Google Cloud'da GUI mode (Cloudflare'ı bypass etmek için)
-        logger.info("⚠️  GUI Mode Etkin (Google Cloud uyumluluğu için)")
+    # Google Cloud'da display server olmadığı için headless zorunlu
+    # Headless mode'da Cloudflare'ı bypass etmek için enhanced CDP ve wait
+    chrome_options.add_argument("--headless=new")
     
     # Google Cloud optimizations
     chrome_options.add_argument("--no-sandbox")
@@ -157,9 +154,9 @@ class PiccoloMonitor:
             logger.info(f"  🌐 Sayfaya gidiyor: {HOT_WHEELS_URL}")
             driver.get(HOT_WHEELS_URL)
             
-            # Cloudflare challenge çözülmesini bekle (Google Cloud'da daha uzun)
-            logger.info("  ⏳ Cloudflare challenge çözülüyor (10s - Google Cloud uyumlu)...")
-            time.sleep(10)  # Google Cloud'da daha uzun bekleme
+            # Cloudflare challenge çözülmesini bekle (Google Cloud Headless için daha uzun)
+            logger.info("  ⏳ Cloudflare challenge çözülüyor (15s - Headless enhanced)...")
+            time.sleep(15)  # Headless modda daha uzun bekleme gerekli
             
             # Document ready
             try:
@@ -314,16 +311,16 @@ class PiccoloMonitor:
                 except Exception as e:
                     logger.warning(f"  ⚠️  Debug HTML kaydetme hatası: {e}")
                 
-                # Agresif scroll (Google Cloud'da lazy loading)
-                logger.warning("  ⚠️  ID bulunamadı, agresif scroll yapılıyor...")
+                # Agresif scroll (Google Cloud Headless'te lazy loading için)
+                logger.warning("  ⚠️  ID bulunamadı, agresif scroll yapılıyor (Headless enhanced)...")
                 
-                # 10 kez scroll + daha uzun bekleme
-                for i in range(10):
+                # 15 kez scroll + uzun bekleme
+                for i in range(15):
                     driver.execute_script("window.scrollBy(0, window.innerHeight * 2)")
-                    time.sleep(2)  # 2s bekleme
+                    time.sleep(1.5)  # 1.5s bekleme
                     
-                    # Her 3 scroll'da kontrol et
-                    if (i + 1) % 3 == 0:
+                    # Her 2 scroll'da kontrol et
+                    if (i + 1) % 2 == 0:
                         intermediate_result = driver.execute_script(js_code)
                         intermediate_ids = intermediate_result.get('ids', [])
                         if intermediate_ids:
