@@ -268,26 +268,28 @@ class MultiSiteMonitor:
         
     def monitor_piccolo(self) -> None:
         """
-        Piccolo Hot Wheels Premium sayfasını izler.
+        Piccolo Hot Wheels Premium sayfasını izler (Selenium with Cloudflare bypass).
         """
         site_id = "piccolo_hw_premium"
 
         try:
-            # Piccolo için driver kontrolü - yoksa veya kapandıysa yeniden oluştur
+            monitor = get_piccolo_monitor()
+            
+            # Driver'ı hazırla
             if not self.piccolo_driver:
                 print("  🌐 Piccolo Chrome WebDriver başlatılıyor...")
                 self.piccolo_driver = setup_piccolo_driver(headless=True)
                 time.sleep(2)
             else:
-                # Driver'ın hala açık olduğunu kontrol et
+                # Driver kontrolü
                 try:
                     self.piccolo_driver.current_url
                 except:
-                    print("  🔄 Piccolo Chrome WebDriver yeniden başlatılıyor...")
+                    print("  🔄 Driver yeniden başlatılıyor...")
                     self.piccolo_driver = setup_piccolo_driver(headless=True)
                     time.sleep(2)
-
-            monitor = get_piccolo_monitor()
+            
+            # Selenium ile çek
             products, error = scrape_piccolo_sync(monitor, self.piccolo_driver)
 
             if error:
