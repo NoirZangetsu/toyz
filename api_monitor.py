@@ -157,65 +157,116 @@ class PiccoloMonitor:
             # JavaScript ile ürün ID'lerini çıkart
             logger.info("  🔍 JavaScript ile ürün ID'leri çıkarılıyor...")
             
+            # Enhanced JS - Daha esnek ve debug bilgisi verir
             js_code = """
             let ids = [];
             const seen = new Set();
+            let debug_info = {methods: {}, counts: {}};
             
             // Method 1: data-id attribute (ana yöntem)
             try {
-                document.querySelectorAll('[data-id]').forEach(el => {
+                const elements = document.querySelectorAll('[data-id]');
+                debug_info.counts.data_id = elements.length;
+                elements.forEach(el => {
                     const id = el.getAttribute('data-id');
-                    if (id && !seen.has(id)) {
+                    if (id && !seen.has(id) && /^\\d+$/.test(id)) {
                         seen.add(id);
                         ids.push(id);
                     }
                 });
-            } catch(e) {}
+                debug_info.methods.method1 = ids.length > 0 ? 'SUCCESS' : 'FOUND_' + elements.length;
+            } catch(e) {
+                debug_info.methods.method1 = 'ERROR: ' + e.message;
+            }
             
             // Method 2: data-product-id attribute
             if (ids.length === 0) {
                 try {
-                    document.querySelectorAll('[data-product-id]').forEach(el => {
+                    const elements = document.querySelectorAll('[data-product-id]');
+                    debug_info.counts.data_product_id = elements.length;
+                    elements.forEach(el => {
                         const id = el.getAttribute('data-product-id');
-                        if (id && !seen.has(id)) {
+                        if (id && !seen.has(id) && /^\\d+$/.test(id)) {
                             seen.add(id);
                             ids.push(id);
                         }
                     });
-                } catch(e) {}
+                    debug_info.methods.method2 = ids.length > 0 ? 'SUCCESS' : 'FOUND_' + elements.length;
+                } catch(e) {
+                    debug_info.methods.method2 = 'ERROR: ' + e.message;
+                }
             }
             
-            // Method 3: URL'den ID çıkart (fallback)
+            // Method 3: class='detailUrl' ile bul
             if (ids.length === 0) {
                 try {
-                    document.querySelectorAll('a[href*="hot-wheels-premium"]').forEach(a => {
-                        const href = a.href;
-                        const match = href.match(/(\\d+)[^\\d]*$/);
-                        if (match && match[1]) {
-                            if (!seen.has(match[1])) {
-                                seen.add(match[1]);
-                                ids.push(match[1]);
-                            }
+                    const elements = document.querySelectorAll('.detailUrl, [class*="detail"]');
+                    debug_info.counts.detail_class = elements.length;
+                    elements.forEach(el => {
+                        const id = el.getAttribute('data-id');
+                        if (id && !seen.has(id) && /^\\d+$/.test(id)) {
+                            seen.add(id);
+                            ids.push(id);
                         }
                     });
-                } catch(e) {}
+                    debug_info.methods.method3 = ids.length > 0 ? 'SUCCESS' : 'FOUND_' + elements.length;
+                } catch(e) {
+                    debug_info.methods.method3 = 'ERROR: ' + e.message;
+                }
             }
             
-            return ids;
+            // Method 4: Tüm div'leri scan et
+            if (ids.length === 0) {
+                try {
+                    const divs = document.querySelectorAll('div[data-id]');
+                    debug_info.counts.div_data_id = divs.length;
+                    divs.forEach(el => {
+                        const id = el.getAttribute('data-id');
+                        if (id && !seen.has(id) && /^\\d+$/.test(id)) {
+                            seen.add(id);
+                            ids.push(id);
+                        }
+                    });
+                    debug_info.methods.method4 = ids.length > 0 ? 'SUCCESS' : 'FOUND_' + divs.length;
+                } catch(e) {
+                    debug_info.methods.method4 = 'ERROR: ' + e.message;
+                }
+            }
+            
+            debug_info.page_title = document.title;
+            debug_info.page_html_length = document.documentElement.outerHTML.length;
+            debug_info.final_count = ids.length;
+            
+            return {ids: ids, debug: debug_info};
             """
             
-            product_ids = driver.execute_script(js_code)
+            result = driver.execute_script(js_code)
+            product_ids = result.get('ids', [])
+            debug_info = result.get('debug', {})
+            
             logger.info(f"  ✅ {len(product_ids)} ürün ID'si bulundu")
+            logger.debug(f"  📊 Debug info: {debug_info}")
             
             if not product_ids:
+                # Debug: Sayfayı kaydet
+                try:
+                    with open("piccolo_debug.html", "w", encoding="utf-8") as f:
+                        f.write(driver.page_source[:50000])
+                    logger.info("  💾 Debug HTML kaydedildi: piccolo_debug.html")
+                except:
+                    pass
+                
                 # Scroll dene
                 logger.warning("  ⚠️  ID bulunamadı, scroll yapılıyor...")
                 for i in range(5):
                     driver.execute_script("window.scrollBy(0, window.innerHeight)")
                     time.sleep(1)
                 
-                product_ids = driver.execute_script(js_code)
+                result = driver.execute_script(js_code)
+                product_ids = result.get('ids', [])
+                debug_info = result.get('debug', {})
                 logger.info(f"  ↻ Scroll sonrası: {len(product_ids)} ID")
+                logger.debug(f"  📊 Debug info (after scroll): {debug_info}")
             
             if not product_ids:
                 return [], "Selenium'den ürün ID'si bulunamadı"
